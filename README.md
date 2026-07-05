@@ -60,6 +60,7 @@ pick6/sim.py           market-aware leg scoring, availability + same-game guards
 pick6/crosscheck.py    RotoWire second-opinion gate (free proj endpoint; drops disagreements)
 pick6/correlation.py   day-factor model: correlation-adjusted joint P + outcome matrix
 pick6/feed.py          full-slate λ feed (/v2/slate rows + /v2/predict fallback, accent-folded names)
+pick6/batter_feed.py   StatsAPI season-rate batter projections (hits/TB/HR/RBI/runs)
 pick6/pick6_today.py   join λ to the DK board, score whole board, step down 3->2 picks, build entries
 pick6/log_entries.py   append a day's paper entries to data/pick6_entries.csv (idempotent)
 pick6/grade.py         grade logged legs vs MLB StatsAPI finals; report ROI + out-of-sample calibration
@@ -111,14 +112,16 @@ that better — but they supply the ingestion layer:
   Bradish: model More vs RotoWire Under → gated). Legs RotoWire doesn't cover
   pass through flagged "unconfirmed". Coverage is partial (a handful of pitchers/
   day), so it mostly kills bad legs rather than confirming good ones.
-- **Multi-market (framework done, projections partial):** `markets.py` makes
-  scoring market-aware so the board's `market` column can be strikeouts, total
-  bases, runs, etc. Strikeouts is production-ready (mlb-edge λ + fitted NB).
-  RotoWire's free feed also covers **total bases / runs / earned runs** (usable
-  as both projection and cross-check); **hits / HR / RBI are paywalled**
-  ($20 RotoWire Basic) — those await a free baseline (StatsAPI season rates ×
-  projected PAs) before they can be scored. Each new market also needs its
-  dispersion fitted (calibration/fit_market.py, TODO).
+- **Multi-market (done):** `markets.py` makes scoring market-aware via the
+  board's `market` column. **Pitcher strikeouts** = calibrated (mlb-edge λ +
+  fitted NB). **Batter hits / total bases / home runs / RBI / runs** now score
+  off a free **StatsAPI season-rate baseline** (`batter_feed.py`): season
+  per-AB/PA rates × projected PAs by lineup slot. Batter props are labelled
+  **baseline / lower-confidence** — matchup-neutral (ignore the opposing pitcher
+  + park) and their dispersion isn't fitted yet. RotoWire cross-checks TB/runs
+  for free; hits/HR/RBI stay unconfirmed. Capture batter lines in
+  `data/pick6_board_<date>_batters.csv` (DK's separate tabs). The dashboard has a
+  Pitcher↔Batter toggle. Entries can mix markets, which lowers correlation.
 - **Phase 4 (done):** day-level correlation. Settled data has a real "K
   environment" factor — after removing sampling noise, latent sd **τ≈0.081**
   (`calibration/correlation.py`). `correlation.py` models a shared multiplier
@@ -145,5 +148,10 @@ python pick6/grade.py                     # after games: grade + running ROI/cal
 Static dashboard on the kv8 VPS (46.202.143.253), same host as strike. One-time:
 install `deploy/fantasy.nginx`, create `/var/www/fantasy`, run certbot. Then
 `deploy/deploy.sh [date]` builds `web/dist/index.html` and rsyncs it up. The page
-shows today's entries, all scored legs with the RotoWire column, and the paper
-track record (ROI + out-of-sample calibration).
+shows today's entries, all scored legs (Pitcher↔Batter toggle) with the RotoWire
+column, and the paper track record (ROI + out-of-sample calibration).
+
+**Daily autopilot:** `deploy/cron_daily.sh` (cloned to `/opt/fantasy` on kv8,
+run from crontab) pulls the repo, grades settled entries, logs today's entries,
+rebuilds + publishes the dashboard, and commits the graded record back. Capture
+the DK boards into `data/` and commit; the cron does the rest.

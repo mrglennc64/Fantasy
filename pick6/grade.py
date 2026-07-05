@@ -34,10 +34,21 @@ def _get(url):
         return json.load(r)
 
 
-def final_strikeouts(date: str) -> dict[str, int]:
-    """norm(pitcher) -> strikeouts for FINAL games on date."""
+# market -> (boxscore stat group, field)
+_STAT = {
+    "strikeouts":  ("pitching", "strikeOuts"),
+    "hits":        ("batting", "hits"),
+    "total_bases": ("batting", "totalBases"),
+    "home_runs":   ("batting", "homeRuns"),
+    "rbi":         ("batting", "rbi"),
+    "runs":        ("batting", "runs"),
+}
+
+
+def final_stats(date: str) -> dict[str, dict[str, int]]:
+    """norm(player) -> {market: actual} for FINAL games on date (pitching + batting)."""
     sched = _get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date}")
-    out = {}
+    out: dict[str, dict[str, int]] = {}
     for d in sched.get("dates", []):
         for g in d.get("games", []):
             if g.get("status", {}).get("abstractGameState") != "Final":
@@ -48,9 +59,14 @@ def final_strikeouts(date: str) -> dict[str, int]:
                 continue
             for side in ("home", "away"):
                 for pdata in box["teams"][side]["players"].values():
-                    so = pdata.get("stats", {}).get("pitching", {}).get("strikeOuts")
-                    if so is not None:
-                        out[norm(pdata["person"]["fullName"])] = int(so)
+                    stats = pdata.get("stats", {})
+                    rec = {}
+                    for market, (grp, field) in _STAT.items():
+                        v = stats.get(grp, {}).get(field)
+                        if v is not None:
+                            rec[market] = int(v)
+                    if rec:
+                        out[norm(pdata["person"]["fullName"])] = rec
     return out
 
 
@@ -65,16 +81,17 @@ def main() -> None:
     rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
 
     pending_dates = sorted({r["date"] for r in rows if r["leg_won"] == ""})
-    results = {d: final_strikeouts(d) for d in pending_dates}
+    results = {d: final_stats(d) for d in pending_dates}
     graded_now = 0
     for r in rows:
         if r["leg_won"] != "":
             continue
-        actual = results.get(r["date"], {}).get(norm(r["pitcher"]))
+        market = r.get("market", "strikeouts")
+        actual = results.get(r["date"], {}).get(norm(r["pitcher"]), {}).get(market)
         if actual is None:
-            continue  # game not Final yet — leave pending
+            continue  # game not Final yet (or player didn't play) — leave pending
         won = leg_won(r["side"], float(r["line"]), actual)
-        r["actual_ks"] = actual
+        r["actual_ks"] = actual   # column holds the market's actual value
         r["leg_won"] = "1" if won else "0"
         graded_now += 1
 

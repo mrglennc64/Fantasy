@@ -16,6 +16,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pick6"))
 from pick6_today import compute_entries  # noqa: E402
+from markets import market_side  # noqa: E402
+
+MKT_ABBR = {"strikeouts": "K", "hits": "H", "total_bases": "TB",
+            "home_runs": "HR", "rbi": "RBI", "runs": "R"}
 
 ENTRIES_LOG = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
 
@@ -61,6 +65,8 @@ th{color:var(--mut);font-weight:600;font-size:12px}td.n,th.n{text-align:right;fo
 .pos{color:var(--pos)}.neg{color:var(--neg)}.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:12px;background:#21262d}
 .kpi{display:flex;gap:24px;flex-wrap:wrap}.kpi div{min-width:90px}.kpi .v{font-size:22px;font-weight:700}.kpi .l{color:var(--mut);font-size:12px}
 .warn{background:#2d2212;border-color:#5c4813;color:#e3b341;font-size:13px}
+.toggle button{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:13px;margin-left:4px}
+.toggle button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 @media(prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#fff;--line:#d0d7de;--fg:#1f2328;--mut:#636c76}}
 """
 
@@ -87,7 +93,10 @@ def render(date, res, tr):
         rwp = f"{rw:.1f}" if rw is not None else "—"
         agree = {True: "<span class=pos>✓</span>", False: "<span class=neg>✗</span>",
                  None: "<span style='color:var(--mut)'>·</span>"}[l.get("rw_agree")]
-        leg_rows += (f"<tr><td>{l['name']}</td><td>{l.get('game','')}</td>"
+        grp = market_side(l["market"])
+        mkt = MKT_ABBR.get(l["market"], l["market"])
+        leg_rows += (f"<tr data-side='{grp}'><td>{l['name']}</td>"
+                     f"<td><span class=pill>{mkt}</span></td><td>{l.get('game','')}</td>"
                      f"<td class='n'>{l['line']}</td><td class='n'>{l['lam']:.2f}</td>"
                      f"<td>{_side(l).upper()}</td><td class='n'>{_p(l)*100:.1f}%</td>"
                      f"<td class='n'>{rwp}</td><td>{agree}</td>"
@@ -102,7 +111,7 @@ def render(date, res, tr):
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Fantasy — DK Pick6 edge</title><style>{CSS}</style></head><body><div class=wrap>
 <h1>Fantasy · DraftKings Pick6 edge</h1>
-<div class=sub>Pitcher strikeouts · calibrated Negative-Binomial model · slate {date} · PAPER ONLY</div>
+<div class=sub>Pitcher strikeouts (calibrated) + batter props (StatsAPI baseline) · slate {date} · PAPER ONLY</div>
 
 <div class="card"><h2>Paper track record</h2><div class=kpi>
 <div><div class="v {roicls}">{tr['roi']:+.1f}%</div><div class=l>ROI</div></div>
@@ -115,9 +124,17 @@ def render(date, res, tr):
 <tr><th>#</th><th>legs</th><th class=n>P(win)</th><th class=n>mult</th><th class=n>EV</th><th class=n>stake</th></tr>
 {entry_rows}</table></div>
 
-<div class=card><h2>All board legs scored</h2><table>
-<tr><th>pitcher</th><th>game</th><th class=n>DK line</th><th class=n>λ</th><th>pick</th><th class=n>model P</th><th class=n>RW proj</th><th>RW</th><th>play</th></tr>
-{leg_rows}</table><div style="margin-top:8px;color:var(--mut);font-size:12px">RW = RotoWire second opinion: ✓ agrees · ✗ disagrees (gated out) · · no free projection</div></div>
+<div class=card><div style="display:flex;justify-content:space-between;align-items:center">
+<h2 style="margin:0">All board legs scored</h2>
+<div class=toggle><button id=tb-pitcher class=on onclick="flt('pitcher')">Pitchers</button><button id=tb-batter onclick="flt('batter')">Batters</button><button id=tb-all onclick="flt('all')">All</button></div></div>
+<table id=legtbl style="margin-top:12px">
+<tr><th>player</th><th>prop</th><th>game</th><th class=n>DK line</th><th class=n>λ</th><th>pick</th><th class=n>model P</th><th class=n>RW proj</th><th>RW</th><th>play</th></tr>
+{leg_rows}</table><div style="margin-top:8px;color:var(--mut);font-size:12px">RW = RotoWire second opinion: ✓ agrees · ✗ disagrees (gated out) · · no free projection. Batter props use a StatsAPI season-rate baseline (matchup-neutral, lower confidence).</div></div>
+<script>
+function flt(g){{document.querySelectorAll('#legtbl tr[data-side]').forEach(function(r){{r.style.display=(g==='all'||r.dataset.side===g)?'':'none';}});
+['pitcher','batter','all'].forEach(function(k){{document.getElementById('tb-'+k).className=(k===g)?'on':'';}});}}
+flt('pitcher');
+</script>
 
 <div class="card warn">⚠️ Paper only. The model's dispersion was fit in-sample; entries are staked
 hypothetically at quarter-Kelly. Nothing here is betting advice. Verify every DK line and multiplier before acting.</div>

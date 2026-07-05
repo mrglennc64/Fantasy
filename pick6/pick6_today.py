@@ -16,6 +16,7 @@ import csv
 import os
 import sys
 
+from batter_feed import project as batter_project
 from config import MIN_PICKS, breakeven_per_leg
 from correlation import corr_outcome_matrix, joint_p_all, same_side
 from crosscheck import annotate, gate
@@ -28,15 +29,27 @@ REQUIRE_AGREE = True  # Phase 3: drop legs RotoWire disagrees with
 
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+MKT_ABBR = {"strikeouts": "K", "hits": "H", "total_bases": "TB",
+            "home_runs": "HR", "rbi": "RBI", "runs": "R"}
+_SUFFIX = {"Jr.", "Sr.", "II", "III", "IV"}
 
 
-def load_board(date: str) -> list[dict]:
-    path = os.path.join(DATA, f"pick6_board_{date}.csv")
+def leg_label(l: dict) -> str:
+    """Short unambiguous leg label: 'Witt Jr. H O0.5' (keeps Jr./Sr. + market)."""
+    parts = l["name"].split()
+    surname = " ".join(parts[-2:]) if len(parts) > 1 and parts[-1] in _SUFFIX else parts[-1]
+    mkt = MKT_ABBR.get(l["market"], l["market"])
+    return f"{surname} {mkt} {l['side'][0].upper()}{l['line']}"
+
+
+def _read_board_file(path: str) -> list[dict]:
     rows = []
     for r in csv.DictReader(open(path, encoding="utf-8")):
         rows.append({
-            "pitcher": r["pitcher"], "game": r["game"], "line": float(r["line"]),
+            "name": (r.get("player") or r.get("pitcher") or "").strip(),
+            "game": r["game"], "line": float(r["line"]),
             "market": r.get("market", "strikeouts"),
+            "slot": int(r["slot"]) if r.get("slot") else None,
             "more_boost": float(r["more_boost"]),
             "more_available": r["more_available"] == "True",
             "less_available": r["less_available"] == "True",
@@ -44,20 +57,41 @@ def load_board(date: str) -> list[dict]:
     return rows
 
 
+def load_board(date: str) -> list[dict]:
+    """Pitcher board plus an optional batter board (captured from DK's separate
+    tabs): pick6_board_<date>.csv  +  pick6_board_<date>_batters.csv. Returns []
+    if no board was captured for the date (so the cron/dashboard don't crash)."""
+    rows = []
+    for suffix in ("", "_batters"):
+        p = os.path.join(DATA, f"pick6_board_{date}{suffix}.csv")
+        if os.path.exists(p):
+            rows += _read_board_file(p)
+    return rows
+
+
+def _project(b: dict, date: str, slate: dict) -> float | None:
+    """Route a board row to its projection source by market."""
+    if b["market"] == "strikeouts":
+        return slate.get(b["name"])
+    season = int(date[:4])
+    return batter_project(b["name"], b["market"], season, b.get("slot"))
+
+
 def compute_entries(date: str) -> dict:
     """Build the day's paper entries. Returns a dict consumed by both the CLI
     display and the entry logger (log_entries.py). No printing here.
     """
     board = load_board(date)
-    lam = lambdas_for(board, date)  # full-slate feed + per-pitcher fallback
+    # strikeout λ come from the mlb-edge slate (batch); batter λ from StatsAPI.
+    slate = lambdas_for([b for b in board if b["market"] == "strikeouts"], date)
 
     legs, unmatched = [], []
     for b in board:
-        L = lam.get(b["pitcher"])
+        L = _project(b, date, slate)
         if L is None:
-            unmatched.append(b["pitcher"])
+            unmatched.append(b["name"])
             continue
-        legs.append({"name": b["pitcher"], "game": b["game"], "line": b["line"],
+        legs.append({"name": b["name"], "game": b["game"], "line": b["line"],
                      "market": b["market"], "lam": L, "more_boost": b["more_boost"],
                      "more_available": b["more_available"],
                      "less_available": b["less_available"]})
@@ -108,20 +142,22 @@ def main() -> None:
         print("No model<->board matches (is the slate live / names aligned?).")
         return
 
+    kept = {id(x) for e in entries for x in e["legs"]}
     kept_names = {x["name"] for e in entries for x in e["legs"]}
     be = breakeven_per_leg(N_PICKS)
     print(f"\nLEG SCORES (need P >= breakeven {be*100:.1f}% + {MARGIN*100:.0f}%margin; "
           f"RotoWire must agree)")
-    print(f"  {'pitcher':16}{'DKline':>7}{'lambda':>8}{'pick':>7}{'modelP':>8}"
-          f"{'RW proj':>8}{'RW':>5}{'play':>6}")
+    print(f"  {'player':22}{'prop':>5}{'line':>6}{'lambda':>8}{'pick':>7}{'modelP':>8}"
+          f"{'RW':>6}{'play':>6}")
     for l in sorted(legs, key=lambda x: -score_leg(x)["p"]):
         s = score_leg(l)
         rw = l.get("rw_proj")
-        rwp = f"{rw:.1f}" if rw is not None else "  -"
-        agree = {True: "ok", False: "DIFF", None: "?"}[l.get("rw_agree")]
+        rwtxt = (f"{rw:.1f}" if rw is not None else "-") + \
+            {True: "ok", False: "!!", None: ""}[l.get("rw_agree")]
         play = "yes" if l["name"] in kept_names else ""
-        print(f"  {l['name']:16}{l['line']:7.1f}{l['lam']:8.2f}"
-              f"{s['side'].upper():>7}{s['p']*100:7.1f}%{rwp:>8}{agree:>5}{play:>6}")
+        print(f"  {l['name'][:22]:22}{MKT_ABBR.get(l['market'], l['market']):>5}"
+              f"{l['line']:6.1f}{l['lam']:8.2f}{s['side'].upper():>7}{s['p']*100:7.1f}%"
+              f"{rwtxt:>6}{play:>6}")
 
     if not entries:
         print(f"\nNo playable entry: fewer than {MIN_PICKS} independent legs clear "
@@ -136,8 +172,7 @@ def main() -> None:
     print("  (P_ind = independent; P_cor = day-correlation-adjusted, used for sizing)")
     print(f"  {'#':>2} {'legs':38}{'P_ind':>7}{'P_cor':>7}{'mult':>6}{'EV_cor':>8}{'stake':>8}")
     for i, e in enumerate(entries, 1):
-        names = " + ".join(f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}"
-                           for l in e["legs"])
+        names = " + ".join(leg_label(l) for l in e["legs"])
         conc = " *same-side" if e["same_side"] else ""
         print(f"  {i:>2} {names:38}{e['p']*100:6.1f}%{e['corr_p']*100:6.1f}%"
               f"{e['mult']:5.1f}x{e['corr_ev']*100:+7.0f}%{e['stake']:8.2f}{conc}")

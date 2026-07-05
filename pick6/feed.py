@@ -60,11 +60,12 @@ def lambdas_for(board: list[dict], date: str) -> dict[str, float]:
     slate = slate_lambdas(date)
     out: dict[str, float] = {}
     for b in board:
-        key = norm(b["pitcher"])
+        name = b.get("name") or b.get("pitcher")
+        key = norm(name)
         if key in slate:
-            out[b["pitcher"]] = slate[key]
+            out[name] = slate[key]
         else:
-            lam = predict_lambda(b["pitcher"], date, b["line"])
+            lam = predict_lambda(name, date, b["line"])
             if lam is not None:
-                out[b["pitcher"]] = lam
+                out[name] = lam
     return out

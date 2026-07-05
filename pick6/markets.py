@@ -28,21 +28,36 @@ def _pois_pmf(k, mu):
     return math.exp(-mu) * mu ** k / math.factorial(k)
 
 
-# dist: "nb" needs r; "poisson" for rare counts. ready=True once dispersion is
-# fitted AND a mu (projection) source is wired.
+# dist: "nb" needs r; "poisson" for rare counts.
+# confidence: "calibrated" (dispersion fitted on settled data) vs "baseline"
+# (StatsAPI season-rate projection, matchup-neutral, dispersion NOT yet fitted).
+# side: "pitcher" or "batter" — drives the dashboard toggle.
 MARKETS = {
-    "strikeouts":      {"dist": "nb", "r": DISPERSION_R, "ready": True,
-                        "mu_source": "mlb-edge /v2/slate expected_ks"},
-    "hits":            {"dist": "nb", "r": 12.0, "ready": False, "mu_source": None},
-    "total_bases":     {"dist": "nb", "r": 6.0,  "ready": False, "mu_source": None},
-    "hits_runs_rbis":  {"dist": "nb", "r": 8.0,  "ready": False, "mu_source": None},
-    "home_runs":       {"dist": "poisson",       "ready": False, "mu_source": None},
-    "walks":           {"dist": "poisson",       "ready": False, "mu_source": None},
+    "strikeouts":   {"dist": "nb", "r": DISPERSION_R, "ready": True, "side": "pitcher",
+                     "confidence": "calibrated", "mu_source": "mlb-edge /v2/slate"},
+    "hits":         {"dist": "poisson", "ready": True, "side": "batter",
+                     "confidence": "baseline", "mu_source": "StatsAPI season H/AB"},
+    "total_bases":  {"dist": "nb", "r": 4.0, "ready": True, "side": "batter",
+                     "confidence": "baseline", "mu_source": "StatsAPI season TB/AB"},
+    "home_runs":    {"dist": "poisson", "ready": True, "side": "batter",
+                     "confidence": "baseline", "mu_source": "StatsAPI season HR/AB"},
+    "rbi":          {"dist": "poisson", "ready": True, "side": "batter",
+                     "confidence": "baseline", "mu_source": "StatsAPI season RBI/PA"},
+    "runs":         {"dist": "poisson", "ready": True, "side": "batter",
+                     "confidence": "baseline", "mu_source": "StatsAPI season R/PA"},
 }
 
 
 def is_ready(market: str) -> bool:
     return MARKETS.get(market, {}).get("ready", False)
+
+
+def market_side(market: str) -> str:
+    return MARKETS.get(market, {}).get("side", "pitcher")
+
+
+def confidence(market: str) -> str:
+    return MARKETS.get(market, {}).get("confidence", "baseline")
 
 
 def p_over(market: str, mu: float, line: float) -> float:
