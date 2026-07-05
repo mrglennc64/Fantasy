@@ -16,11 +16,13 @@ import csv
 import sys
 
 from config import MIN_PICKS, breakeven_per_leg
+from crosscheck import annotate, gate
 from feed import lambdas_for
-from sim import allocate, build_entries, outcome_matrix, rank_legs
+from sim import allocate, build_entries, outcome_matrix, rank_legs, score_leg
 
 BANKROLL, N_PICKS, MAX_ENTRIES = 1000.0, 3, 4
 DAILY_FRAC, KELLY_FRAC, PER_CAP, MARGIN = 0.05, 0.25, 0.02, 0.05
+REQUIRE_AGREE = True  # Phase 3: drop legs RotoWire disagrees with
 
 
 def load_board(date: str) -> list[dict]:
@@ -29,6 +31,7 @@ def load_board(date: str) -> list[dict]:
     for r in csv.DictReader(open(path, encoding="utf-8")):
         rows.append({
             "pitcher": r["pitcher"], "game": r["game"], "line": float(r["line"]),
+            "market": r.get("market", "strikeouts"),
             "more_boost": float(r["more_boost"]),
             "more_available": r["more_available"] == "True",
             "less_available": r["less_available"] == "True",
@@ -50,14 +53,21 @@ def compute_entries(date: str) -> dict:
             unmatched.append(b["pitcher"])
             continue
         legs.append({"name": b["pitcher"], "game": b["game"], "line": b["line"],
-                     "lam": L, "more_boost": b["more_boost"],
+                     "market": b["market"], "lam": L, "more_boost": b["more_boost"],
                      "more_available": b["more_available"],
                      "less_available": b["less_available"]})
+
+    # Phase 3: attach a model side, then RotoWire second-opinion agreement, and
+    # gate out legs RotoWire explicitly disagrees with.
+    for l in legs:
+        l["side"] = score_leg(l)["side"]
+    annotate(legs)
+    gated = gate(legs, REQUIRE_AGREE)
 
     # Step down from N_PICKS to MIN_PICKS until a valid entry set exists.
     n, entries = N_PICKS, []
     while n >= MIN_PICKS:
-        cand = rank_legs(legs, n, MARGIN)
+        cand = rank_legs(gated, n, MARGIN)
         entries = build_entries(cand, n, MAX_ENTRIES) if len(cand) >= n else []
         if entries:
             break
@@ -83,14 +93,20 @@ def main() -> None:
         print("No model<->board matches (is the slate live / names aligned?).")
         return
 
-    ranked = rank_legs(legs, N_PICKS, MARGIN)
+    kept_names = {x["name"] for e in entries for x in e["legs"]}
     be = breakeven_per_leg(N_PICKS)
-    print(f"\nLEG SCORES (need P >= breakeven {be*100:.1f}% + {MARGIN*100:.0f}%margin)")
-    print(f"  {'pitcher':16}{'DKline':>7}{'lambda':>8}{'pick':>7}{'modelP':>8}{'keep':>6}")
-    for l in (rank_legs(legs, N_PICKS, -1.0)):  # show all, flag kept
-        kept = "yes" if l in ranked else ""
+    print(f"\nLEG SCORES (need P >= breakeven {be*100:.1f}% + {MARGIN*100:.0f}%margin; "
+          f"RotoWire must agree)")
+    print(f"  {'pitcher':16}{'DKline':>7}{'lambda':>8}{'pick':>7}{'modelP':>8}"
+          f"{'RW proj':>8}{'RW':>5}{'play':>6}")
+    for l in sorted(legs, key=lambda x: -score_leg(x)["p"]):
+        s = score_leg(l)
+        rw = l.get("rw_proj")
+        rwp = f"{rw:.1f}" if rw is not None else "  -"
+        agree = {True: "ok", False: "DIFF", None: "?"}[l.get("rw_agree")]
+        play = "yes" if l["name"] in kept_names else ""
         print(f"  {l['name']:16}{l['line']:7.1f}{l['lam']:8.2f}"
-              f"{l['side'].upper():>7}{l['p']*100:7.1f}%{kept:>6}")
+              f"{s['side'].upper():>7}{s['p']*100:7.1f}%{rwp:>8}{agree:>5}{play:>6}")
 
     if not entries:
         print(f"\nNo playable entry: fewer than {MIN_PICKS} independent legs clear "

@@ -55,7 +55,9 @@ DK's line is wildly off and are rare in practice. Re-fit `r` as settled n grows
 ```
 pick6/config.py        multiplier table + breakeven + entry-EV math
 pick6/dispersion.py    fitted NB dispersion r (from calibration)
-pick6/sim.py           leg scoring (NB P(More/Less)), availability + same-game guards, entry builder, outcome matrix
+pick6/markets.py       market registry: per-prop distribution (K ready; TB/runs/ER/hits/HR scaffolded)
+pick6/sim.py           market-aware leg scoring, availability + same-game guards, entry builder, outcome matrix
+pick6/crosscheck.py    RotoWire second-opinion gate (free proj endpoint; drops disagreements)
 pick6/feed.py          full-slate λ feed (/v2/slate rows + /v2/predict fallback, accent-folded names)
 pick6/pick6_today.py   join λ to the DK board, score whole board, step down 3->2 picks, build entries
 pick6/log_entries.py   append a day's paper entries to data/pick6_entries.csv (idempotent)
@@ -63,7 +65,11 @@ pick6/grade.py         grade logged legs vs MLB StatsAPI finals; report ROI + ou
 calibration/nb.py      NB pmf + MLE fit of the dispersion
 calibration/compare.py Poisson vs NB reliability head-to-head
 calibration/backtest.py  Poisson baseline reliability (kept for reference)
-data/pick6_board_*.csv   captured DK Pick6 boards (line + per-leg boosts + More/Less availability)
+web/build_site.py      generate the static dashboard (entries + track record + calibration)
+deploy/fantasy.nginx   nginx server block for fantasy.perfecthold.online
+deploy/deploy.sh       build + rsync the dashboard to the VPS
+data/pick6_board_*.csv   captured DK Pick6 boards (market + line + boosts + availability)
+data/pick6_entries.csv   logged paper entries (graded by grade.py)
 ```
 
 Run:
@@ -98,8 +104,20 @@ that better — but they supply the ingestion layer:
   Also fixed two real bugs: enforce DK More/Less availability (was recommending
   unofferable sides) and step 3→2 picks when the board is thin. Still manual:
   DK board capture from screenshot — automate next.
-- **Phase 3:** cross-check every leg against a second projection (RotoWire
-  Props-vs-Projections); only play legs where both agree on the same side.
+- **Phase 3 (done):** RotoWire second-opinion gate. Their free JSON endpoint
+  (`/betting/mlb/tables/all-bets-props-plus-proj.php?prop=k`) gives a `proj` per
+  pitcher; `crosscheck.py` drops any leg RotoWire disagrees with (e.g. 7/5
+  Bradish: model More vs RotoWire Under → gated). Legs RotoWire doesn't cover
+  pass through flagged "unconfirmed". Coverage is partial (a handful of pitchers/
+  day), so it mostly kills bad legs rather than confirming good ones.
+- **Multi-market (framework done, projections partial):** `markets.py` makes
+  scoring market-aware so the board's `market` column can be strikeouts, total
+  bases, runs, etc. Strikeouts is production-ready (mlb-edge λ + fitted NB).
+  RotoWire's free feed also covers **total bases / runs / earned runs** (usable
+  as both projection and cross-check); **hits / HR / RBI are paywalled**
+  ($20 RotoWire Basic) — those await a free baseline (StatsAPI season rates ×
+  projected PAs) before they can be scored. Each new market also needs its
+  dispersion fitted (calibration/fit_market.py, TODO).
 - **Phase 4:** entry construction (short 2–3 pick sets, correlation, contrarian
   fades) per thelines.com Pick6 strategy.
 - **Phase 5 (built, accumulating):** `log_entries.py` records each day's paper
@@ -114,3 +132,11 @@ that better — but they supply the ingestion layer:
 python pick6/log_entries.py 2026-07-05   # morning: record paper entries
 python pick6/grade.py                     # after games: grade + running ROI/calibration
 ```
+
+## Deploy (fantasy.perfecthold.online)
+
+Static dashboard on the kv8 VPS (46.202.143.253), same host as strike. One-time:
+install `deploy/fantasy.nginx`, create `/var/www/fantasy`, run certbot. Then
+`deploy/deploy.sh [date]` builds `web/dist/index.html` and rsyncs it up. The page
+shows today's entries, all scored legs with the RotoWire column, and the paper
+track record (ROI + out-of-sample calibration).

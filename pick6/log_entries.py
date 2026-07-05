@@ -17,8 +17,8 @@ from pick6_today import compute_entries
 
 LOG = "../data/pick6_entries.csv"
 FIELDS = ["date", "entry_id", "n_picks", "mult", "stake", "leg_idx",
-          "pitcher", "game", "side", "line", "lam", "model_p", "boost",
-          "actual_ks", "leg_won"]
+          "pitcher", "game", "market", "side", "line", "lam", "model_p", "boost",
+          "rw_proj", "rw_agree", "actual_ks", "leg_won"]
 
 
 def already_logged(date: str) -> bool:
@@ -44,12 +44,16 @@ def main() -> None:
     for i, e in enumerate(entries, 1):
         eid = f"{date}-{i}"
         for j, l in enumerate(e["legs"]):
+            rw = l.get("rw_proj")
             rows.append({
                 "date": date, "entry_id": eid, "n_picks": res["n_picks"],
                 "mult": f"{e['mult']:.3f}", "stake": f"{e['stake']:.2f}",
                 "leg_idx": j, "pitcher": l["name"], "game": l["game"],
+                "market": l.get("market", "strikeouts"),
                 "side": l["side"], "line": l["line"], "lam": f"{l['lam']:.3f}",
                 "model_p": f"{l['p']:.4f}", "boost": l["boost"],
+                "rw_proj": "" if rw is None else f"{rw:.1f}",
+                "rw_agree": {True: "1", False: "0", None: ""}[l.get("rw_agree")],
                 "actual_ks": "", "leg_won": "",
             })
 

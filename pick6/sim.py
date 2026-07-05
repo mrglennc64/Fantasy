@@ -21,6 +21,7 @@ from itertools import combinations
 
 from config import breakeven_per_leg, entry_ev, entry_multiplier
 from dispersion import DISPERSION_R
+from markets import p_over
 
 # ---- step 1: side probabilities from a calibrated Negative-Binomial ----------
 # Phase 2 (calibration/compare.py) showed Poisson under-disperses strikeouts and
@@ -51,8 +52,10 @@ def p_more(lam: float, line: float, r: float = DISPERSION_R) -> float:
 
 
 def score_leg(leg: dict) -> dict:
-    """leg in: name, game, line, lam, [more_boost]. Chooses the +side and prob."""
-    pm = p_more(leg["lam"], leg["line"])
+    """leg in: name, game, line, lam, market, [more_boost]. Chooses side + prob
+    using the market's distribution (markets.p_over); defaults to strikeouts."""
+    market = leg.get("market", "strikeouts")
+    pm = p_over(market, leg["lam"], leg["line"])
     side, p = ("more", pm) if pm >= 0.5 else ("less", 1.0 - pm)
     boost = leg.get("more_boost", 1.0) if side == "more" else 1.0
     return {**leg, "side": side, "p": p, "boost": boost}

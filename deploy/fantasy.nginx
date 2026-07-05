@@ -1,0 +1,27 @@
+# nginx server block for fantasy.perfecthold.online (kv8 / 46.202.143.253).
+# Static site — no backend service. Mirrors the strike.perfecthold.online setup
+# (gzip + cache). Install:
+#   sudo cp fantasy.nginx /etc/nginx/sites-available/fantasy
+#   sudo ln -s /etc/nginx/sites-available/fantasy /etc/nginx/sites-enabled/fantasy
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d fantasy.perfecthold.online   # TLS (Let's Encrypt)
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name fantasy.perfecthold.online;
+
+    root /var/www/fantasy;
+    index index.html;
+
+    gzip on;
+    gzip_types text/html text/css application/javascript application/json;
+
+    # HTML: short cache so the daily rebuild shows up quickly.
+    location = /index.html {
+        add_header Cache-Control "public, max-age=300";
+    }
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
