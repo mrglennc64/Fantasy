@@ -27,10 +27,10 @@ from datetime import date as _date, timedelta
 import math
 
 from config import MIN_PICKS, entry_multiplier
-from correlation import joint_p_all
 from feed import norm
 from grade import final_stats, leg_won
-from sim import build_entries, rank_legs, score_leg
+from pick6_line import sim_pick6_line
+from sim import rank_legs
 
 N_PICKS, MAX_ENTRIES, MARGIN, STAKE = 3, 4, 0.05, 1.0
 OUT = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -40,12 +40,14 @@ def _make_entry(legs):
     boosts = [l["boost"] for l in legs]
     mult = entry_multiplier(len(legs), boosts)
     p = math.prod(l["p"] for l in legs)
-    return {"legs": legs, "p": p, "mult": mult, "ev": p * mult - 1}
+    return {"legs": legs, "n": len(legs), "p": p, "mult": mult, "ev": p * mult - 1}
 
 
-def build_disjoint(legs, n, max_entries):
-    """Entries that never REUSE a leg (no double-counted, correlated overlap)."""
-    ranked = rank_legs(legs, n, MARGIN)
+def build_disjoint(legs, n, max_entries, margin=MARGIN, platform="dk_pick6"):
+    """Entries that never REUSE a leg (no double-counted, correlated overlap).
+    Since each pitcher starts once/day, this also caps each pitcher to <=1
+    entry/day — the per-day pitcher-cluster cap."""
+    ranked = rank_legs(legs, n, margin, platform)
     used, entries = set(), []
     while len(entries) < max_entries:
         chosen, games = [], set()
@@ -61,27 +63,6 @@ def build_disjoint(legs, n, max_entries):
             used.add(id(l))
         entries.append(_make_entry(chosen))
     return entries
-
-
-def select(legs, mode):
-    """Return (n_picks, entries) for a selection MODE, stepping 3->2 picks.
-      overlap  = live default (up to 4 entries, may share legs)
-      disjoint = up to 4 entries, each leg used at most once
-      best     = the single top entry per day (fully independent day-bets)
-    """
-    n = N_PICKS
-    while n >= MIN_PICKS:
-        if mode == "disjoint":
-            e = build_disjoint(legs, n, MAX_ENTRIES)
-        else:
-            cand = rank_legs(legs, n, MARGIN)
-            e = build_entries(cand, n, MAX_ENTRIES) if len(cand) >= n else []
-            if mode == "best":
-                e = e[:1]
-        if e:
-            return n, e
-        n -= 1
-    return n, []
 
 
 def _get(u):
@@ -111,73 +92,94 @@ def daterange(a: str, b: str):
         d0 += timedelta(days=1)
 
 
-MODES = ["overlap", "disjoint", "best"]
+# Line sources for the sensitivity sweep. Each maps a book line -> the line the
+# strategy actually bets against. "sportsbook" = use the book line as-is (the
+# proxy); "sim" = simulate a pick'em line with the measured jitter + a softness
+# shift (negative = pick'em posts lines BELOW sportsbook, making Overs easier).
+def line_sources():
+    src = [("sportsbook (proxy)", lambda bl, nm, d: bl)]
+    for s in (-0.5, 0.0, 0.5):
+        tag = f"pick'em sim {s:+.1f}" + (" soft" if s < 0 else " tight" if s > 0 else "")
+        src.append((tag, (lambda s: lambda bl, nm, d: sim_pick6_line(bl, nm, d, softness=s))(s)))
+    return src
+
+
+def run(day_legs, line_fn, margin):
+    """Disjoint (per-day cluster-capped) strategy under a line source + gate."""
+    rows, legsamp = [], []
+    for d, legs in day_legs.items():
+        legs2 = [dict(l) for l in legs]
+        for l in legs2:
+            l["line"] = line_fn(l["line"], l["name"], d)   # book line -> bet line
+        n, entries = 3, []
+        while n >= MIN_PICKS:
+            entries = build_disjoint(legs2, n, 4, margin)
+            if entries:
+                break
+            n -= 1
+        for e in entries:
+            won = all(leg_won(l["side"], l["line"], l["actual"]) for l in e["legs"])
+            rows.append({"date": d, "n": e["n"], "won": int(won),
+                         "pnl": (e["mult"] - 1) if won else -1,
+                         "legs": " + ".join(
+                             f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}"
+                             f"={l['actual']}{'W' if leg_won(l['side'],l['line'],l['actual']) else 'L'}"
+                             for l in e["legs"])})
+            for l in e["legs"]:
+                legsamp.append((l["p"], leg_won(l["side"], l["line"], l["actual"])))
+    return rows, legsamp
 
 
 def main():
     end = sys.argv[2] if len(sys.argv) > 2 else (_date.today() - timedelta(days=1)).isoformat()
     start = sys.argv[1] if len(sys.argv) > 1 else (_date.fromisoformat(end) - timedelta(days=29)).isoformat()
+    GATE = 0.08   # gated margin (proxy for the live RotoWire quality gate — no
+    #             historical RotoWire projections exist, so we gate on a stiffer
+    #             edge requirement instead).
 
-    # Fetch each day ONCE (slate + actuals are the slow part); modes reuse it.
-    day_legs, days_skipped = {}, []
+    day_legs, skipped = {}, 0
     for d in daterange(start, end):
         legs = slate_legs(d)
         actuals = final_stats(d) if legs else {}
         for l in legs:
-            l.update(score_leg(l))                       # attach side/p/boost
             l["actual"] = actuals.get(norm(l["name"]), {}).get("strikeouts")
         legs = [l for l in legs if l["actual"] is not None]
         if len(legs) < MIN_PICKS:
-            days_skipped.append(d)
+            skipped += 1
         else:
             day_legs[d] = legs
 
-    fields = ["mode", "date", "n_picks", "legs", "model_p", "corr_p", "mult",
-              "stake", "won", "pnl", "detail"]
-    all_rows, summary = [], {}
-    for mode in MODES:
-        rows, legsamp = [], []
-        for d, legs in day_legs.items():
-            n, entries = select(legs, mode)
-            for e in entries:
-                e_won = all(leg_won(l["side"], l["line"], l["actual"]) for l in e["legs"])
-                pnl = STAKE * (e["mult"] - 1) if e_won else -STAKE
-                detail = " + ".join(
-                    f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}"
-                    f"={l['actual']}{'W' if leg_won(l['side'],l['line'],l['actual']) else 'L'}"
-                    for l in e["legs"])
-                rows.append({
-                    "mode": mode, "date": d, "n_picks": n,
-                    "legs": " + ".join(f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}" for l in e["legs"]),
-                    "model_p": f"{e['p']:.4f}", "corr_p": f"{joint_p_all(e['legs']):.4f}",
-                    "mult": f"{e['mult']:.1f}", "stake": f"{STAKE:.2f}",
-                    "won": int(e_won), "pnl": f"{pnl:+.2f}", "detail": detail})
-                for l in e["legs"]:
-                    legsamp.append((l["p"], leg_won(l["side"], l["line"], l["actual"])))
-        all_rows += rows
-        staked = len(rows) * STAKE
-        pnl = sum(float(r["pnl"]) for r in rows)
-        won = sum(int(r["won"]) for r in rows)
-        summary[mode] = (len(rows), won, staked, pnl, legsamp)
-
     out_path = os.path.join(OUT, f"backtest_pick6_{start}_{end}.csv")
+    fields = ["line_source", "date", "n", "won", "pnl", "legs"]
+    all_rows = []
+    print(f"ENHANCED BACKTEST {start} -> {end}   days usable {len(day_legs)}/{len(day_legs)+skipped}")
+    print("  disjoint entries (per-day pitcher-cluster cap) · gate margin 0.08 · flat 1u")
+    print(f"\n  {'line source':22}{'entries':>8}{'won':>5}{'win%':>7}{'ROI':>8}   leg-calib pred->real")
+    for tag, fn in line_sources():
+        rows, ls = run(day_legs, fn, GATE)
+        for r in rows:
+            all_rows.append({"line_source": tag, **r})
+        if not rows:
+            print(f"  {tag:22}{0:>8}"); continue
+        won = sum(r["won"] for r in rows); pnl = sum(r["pnl"] for r in rows)
+        pred = sum(p for p, _ in ls) / len(ls); real = sum(1 for _, w in ls if w) / len(ls)
+        print(f"  {tag:22}{len(rows):>8}{won:>5}{won/len(rows)*100:>6.0f}%"
+              f"{pnl/len(rows)*100:>+7.0f}%   {pred*100:.1f}% -> {real*100:.1f}% (n={len(ls)})")
+
+    # reference: ungated sportsbook, to show the gate's effect
+    rows, ls = run(day_legs, lambda bl, nm, d: bl, 0.05)
+    if rows:
+        won = sum(r["won"] for r in rows); pnl = sum(r["pnl"] for r in rows)
+        print(f"  {'[ref] sportsbook ungated':22}{len(rows):>8}{won:>5}"
+              f"{won/len(rows)*100:>6.0f}%{pnl/len(rows)*100:>+7.0f}%")
+
     os.makedirs(OUT, exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader(); w.writerows(all_rows)
-
-    print(f"BACKTEST {start} -> {end}   days usable {len(day_legs)}/{len(day_legs)+len(days_skipped)}")
-    print(f"  {'mode':9}{'entries':>8}{'won':>6}{'win%':>7}{'ROI':>9}   leg-calib (pred->real)")
-    for mode in MODES:
-        cnt, won, staked, pnl, ls = summary[mode]
-        if not cnt:
-            print(f"  {mode:9}{'0':>8}"); continue
-        pred = sum(p for p, _ in ls) / len(ls); real = sum(1 for _, w in ls if w) / len(ls)
-        print(f"  {mode:9}{cnt:>8}{won:>6}{won/cnt*100:>6.0f}%{pnl/staked*100:>+8.0f}%"
-              f"   {pred*100:.1f}% -> {real*100:.1f}% (n={len(ls)})")
-    print("\n  overlap  = live default (entries may share legs; correlated, inflates sample)")
-    print("  disjoint = each leg used once (de-correlated, the honest strategy number)")
-    print("  best     = 1 entry/day (fully independent daily bets)")
+    print("\n  Read the sweep, not one number: if the edge only survives at 'soft',")
+    print("  it depends on pick'em lines being softer than sportsbook — capture real")
+    print("  boards to confirm. leg-calib is the model check; ROI is small-sample.")
     print(f"  CSV -> {out_path}")
 
 
