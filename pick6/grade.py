@@ -17,7 +17,7 @@ import os
 import unicodedata
 import urllib.request
 
-LOG = "../data/pick6_entries.csv"
+LOG = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
 FIELDS = ["date", "entry_id", "n_picks", "mult", "stake", "leg_idx",
           "pitcher", "game", "market", "side", "line", "lam", "model_p", "boost",
           "rw_proj", "rw_agree", "actual_ks", "leg_won"]

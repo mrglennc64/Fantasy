@@ -58,6 +58,7 @@ pick6/dispersion.py    fitted NB dispersion r (from calibration)
 pick6/markets.py       market registry: per-prop distribution (K ready; TB/runs/ER/hits/HR scaffolded)
 pick6/sim.py           market-aware leg scoring, availability + same-game guards, entry builder, outcome matrix
 pick6/crosscheck.py    RotoWire second-opinion gate (free proj endpoint; drops disagreements)
+pick6/correlation.py   day-factor model: correlation-adjusted joint P + outcome matrix
 pick6/feed.py          full-slate λ feed (/v2/slate rows + /v2/predict fallback, accent-folded names)
 pick6/pick6_today.py   join λ to the DK board, score whole board, step down 3->2 picks, build entries
 pick6/log_entries.py   append a day's paper entries to data/pick6_entries.csv (idempotent)
@@ -118,8 +119,14 @@ that better — but they supply the ingestion layer:
   ($20 RotoWire Basic) — those await a free baseline (StatsAPI season rates ×
   projected PAs) before they can be scored. Each new market also needs its
   dispersion fitted (calibration/fit_market.py, TODO).
-- **Phase 4:** entry construction (short 2–3 pick sets, correlation, contrarian
-  fades) per thelines.com Pick6 strategy.
+- **Phase 4 (done):** day-level correlation. Settled data has a real "K
+  environment" factor — after removing sampling noise, latent sd **τ≈0.081**
+  (`calibration/correlation.py`). `correlation.py` models a shared multiplier
+  D~Normal(1,τ) on every leg's λ and integrates it out: same-side entries (all
+  Unders) are positively correlated → higher true P(all-hit) but a fatter tail;
+  mixed entries score lower. The picker now ranks and sizes on the
+  correlation-adjusted EV and flags same-side concentration. Still short-slate
+  (2–3 picks) per thelines.com.
 - **Phase 5 (built, accumulating):** `log_entries.py` records each day's paper
   entries to `data/pick6_entries.csv`; `grade.py` scores them against MLB
   StatsAPI finals and reports entry ROI + **out-of-sample leg calibration** (the

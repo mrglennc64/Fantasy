@@ -13,9 +13,11 @@ backtest (calibration/backtest.py) before trusting any breakeven. ***
 from __future__ import annotations
 
 import csv
+import os
 import sys
 
 from config import MIN_PICKS, breakeven_per_leg
+from correlation import corr_outcome_matrix, joint_p_all, same_side
 from crosscheck import annotate, gate
 from feed import lambdas_for
 from sim import allocate, build_entries, outcome_matrix, rank_legs, score_leg
@@ -25,8 +27,11 @@ DAILY_FRAC, KELLY_FRAC, PER_CAP, MARGIN = 0.05, 0.25, 0.02, 0.05
 REQUIRE_AGREE = True  # Phase 3: drop legs RotoWire disagrees with
 
 
+DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+
+
 def load_board(date: str) -> list[dict]:
-    path = f"../data/pick6_board_{date}.csv"
+    path = os.path.join(DATA, f"pick6_board_{date}.csv")
     rows = []
     for r in csv.DictReader(open(path, encoding="utf-8")):
         rows.append({
@@ -72,6 +77,16 @@ def compute_entries(date: str) -> dict:
         if entries:
             break
         n -= 1
+    # Phase 4: correlation-adjust each entry (shared day-factor), re-rank by the
+    # corrected EV, and size stakes off the corrected win probability.
+    for e in entries:
+        e["corr_p"] = joint_p_all(e["legs"])
+        e["corr_ev"] = e["corr_p"] * e["mult"] - 1.0
+        e["same_side"] = same_side(e["legs"])
+        b = e["mult"] - 1.0
+        e["kelly"] = max(0.0, (e["corr_p"] * b - (1 - e["corr_p"])) / b)
+    entries.sort(key=lambda e: e["corr_ev"], reverse=True)
+
     daily_cap = scale = None
     if entries:
         entries, daily_cap, scale = allocate(
@@ -118,18 +133,25 @@ def main() -> None:
     daily_cap, scale = res["daily_cap"], res["scale"]
     print(f"\nPOWER-PLAY ENTRIES  ({n}-pick, <= {MAX_ENTRIES}/day, "
           f"daily cap ${daily_cap:.0f}{', scaled '+format(scale,'.2f')+'x' if scale<1 else ''})")
-    print(f"  {'#':>2} {'legs':40}{'P(win)':>8}{'mult':>7}{'EV':>7}{'stake':>8}")
+    print("  (P_ind = independent; P_cor = day-correlation-adjusted, used for sizing)")
+    print(f"  {'#':>2} {'legs':38}{'P_ind':>7}{'P_cor':>7}{'mult':>6}{'EV_cor':>8}{'stake':>8}")
     for i, e in enumerate(entries, 1):
         names = " + ".join(f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}"
                            for l in e["legs"])
-        print(f"  {i:>2} {names:40}{e['p']*100:7.1f}%{e['mult']:6.1f}x"
-              f"{e['ev']*100:+6.0f}%{e['stake']:8.2f}")
+        conc = " *same-side" if e["same_side"] else ""
+        print(f"  {i:>2} {names:38}{e['p']*100:6.1f}%{e['corr_p']*100:6.1f}%"
+              f"{e['mult']:5.1f}x{e['corr_ev']*100:+7.0f}%{e['stake']:8.2f}{conc}")
 
-    om = outcome_matrix(entries)
-    print(f"\nOUTCOME MATRIX  (staked ${om['staked']:.2f})")
-    print(f"  expected P&L ${om['ev']:+.2f}  st.dev ${om['sd']:.2f}  "
-          f"P(profit) {om['p_profit']*100:.1f}%")
+    om_i = outcome_matrix(entries)
+    om = corr_outcome_matrix(entries)
+    print(f"\nOUTCOME MATRIX  (staked ${om['staked']:.2f})   [independent -> correlated]")
+    print(f"  expected P&L ${om_i['ev']:+.2f} -> ${om['ev']:+.2f}   "
+          f"st.dev ${om_i['sd']:.2f} -> ${om['sd']:.2f}   "
+          f"P(profit) {om_i['p_profit']*100:.1f}% -> {om['p_profit']*100:.1f}%")
     print(f"  best ${om['best'][1]:+.2f}  worst ${om['worst'][1]:+.2f}")
+    if any(e["same_side"] for e in entries):
+        print("  * same-side entries sweep together on an extreme K day — higher "
+              "win prob, fatter tail (that's the correlation at work).")
     print("\nPAPER ONLY — validate calibration before staking real money.")
 
 

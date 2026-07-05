@@ -70,10 +70,13 @@ def render(date, res, tr):
     entry_rows = ""
     for i, e in enumerate(res["entries"], 1):
         names = " + ".join(f"{l['name'].split()[-1]} {l['side'][0].upper()}{l['line']}" for l in e["legs"])
-        cls = "pos" if e["ev"] > 0 else "neg"
+        if e.get("same_side"):
+            names += " <span class=pill>same-side</span>"
+        ev = e.get("corr_ev", e["ev"]); pw = e.get("corr_p", e["p"])
+        cls = "pos" if ev > 0 else "neg"
         entry_rows += (f"<tr><td>{i}</td><td>{names}</td>"
-                       f"<td class='n'>{e['p']*100:.1f}%</td><td class='n'>{e['mult']:.1f}×</td>"
-                       f"<td class='n {cls}'>{e['ev']*100:+.0f}%</td><td class='n'>${e['stake']:.2f}</td></tr>")
+                       f"<td class='n'>{pw*100:.1f}%</td><td class='n'>{e['mult']:.1f}×</td>"
+                       f"<td class='n {cls}'>{ev*100:+.0f}%</td><td class='n'>${e['stake']:.2f}</td></tr>")
     if not entry_rows:
         entry_rows = "<tr><td colspan=6 style='color:var(--mut)'>No entry clears breakeven today.</td></tr>"
 
