@@ -36,8 +36,10 @@ def load_board(date: str) -> list[dict]:
     return rows
 
 
-def main() -> None:
-    date = sys.argv[1] if len(sys.argv) > 1 else "2026-07-05"
+def compute_entries(date: str) -> dict:
+    """Build the day's paper entries. Returns a dict consumed by both the CLI
+    display and the entry logger (log_entries.py). No printing here.
+    """
     board = load_board(date)
     lam = lambdas_for(board, date)  # full-slate feed + per-pitcher fallback
 
@@ -51,6 +53,28 @@ def main() -> None:
                      "lam": L, "more_boost": b["more_boost"],
                      "more_available": b["more_available"],
                      "less_available": b["less_available"]})
+
+    # Step down from N_PICKS to MIN_PICKS until a valid entry set exists.
+    n, entries = N_PICKS, []
+    while n >= MIN_PICKS:
+        cand = rank_legs(legs, n, MARGIN)
+        entries = build_entries(cand, n, MAX_ENTRIES) if len(cand) >= n else []
+        if entries:
+            break
+        n -= 1
+    daily_cap = scale = None
+    if entries:
+        entries, daily_cap, scale = allocate(
+            entries, BANKROLL, DAILY_FRAC, KELLY_FRAC, PER_CAP)
+    return {"date": date, "board": board, "legs": legs, "unmatched": unmatched,
+            "entries": entries, "n_picks": n, "daily_cap": daily_cap, "scale": scale}
+
+
+def main() -> None:
+    date = sys.argv[1] if len(sys.argv) > 1 else "2026-07-05"
+    res = compute_entries(date)
+    legs, entries, n = res["legs"], res["entries"], res["n_picks"]
+    board, unmatched = res["board"], res["unmatched"]
 
     print(f"DK Pick6 strikeouts  {date}   board {len(board)} legs, "
           f"model matched {len(legs)}"
@@ -68,16 +92,6 @@ def main() -> None:
         print(f"  {l['name']:16}{l['line']:7.1f}{l['lam']:8.2f}"
               f"{l['side'].upper():>7}{l['p']*100:7.1f}%{kept:>6}")
 
-    # Step down from N_PICKS to MIN_PICKS until a valid entry set exists
-    # (legs must clear breakeven for that pick count AND span distinct games).
-    n = N_PICKS
-    entries: list = []
-    while n >= MIN_PICKS:
-        cand = rank_legs(legs, n, MARGIN)
-        entries = build_entries(cand, n, MAX_ENTRIES) if len(cand) >= n else []
-        if entries:
-            break
-        n -= 1
     if not entries:
         print(f"\nNo playable entry: fewer than {MIN_PICKS} independent legs clear "
               "breakeven+margin across distinct games today. Stop.")
@@ -85,8 +99,7 @@ def main() -> None:
     if n < N_PICKS:
         print(f"\n(Only enough edge for a {n}-pick — stepped down from {N_PICKS}.)")
 
-    entries, daily_cap, scale = allocate(entries, BANKROLL, DAILY_FRAC, KELLY_FRAC, PER_CAP)
-
+    daily_cap, scale = res["daily_cap"], res["scale"]
     print(f"\nPOWER-PLAY ENTRIES  ({n}-pick, <= {MAX_ENTRIES}/day, "
           f"daily cap ${daily_cap:.0f}{', scaled '+format(scale,'.2f')+'x' if scale<1 else ''})")
     print(f"  {'#':>2} {'legs':40}{'P(win)':>8}{'mult':>7}{'EV':>7}{'stake':>8}")

@@ -58,6 +58,8 @@ pick6/dispersion.py    fitted NB dispersion r (from calibration)
 pick6/sim.py           leg scoring (NB P(More/Less)), availability + same-game guards, entry builder, outcome matrix
 pick6/feed.py          full-slate λ feed (/v2/slate rows + /v2/predict fallback, accent-folded names)
 pick6/pick6_today.py   join λ to the DK board, score whole board, step down 3->2 picks, build entries
+pick6/log_entries.py   append a day's paper entries to data/pick6_entries.csv (idempotent)
+pick6/grade.py         grade logged legs vs MLB StatsAPI finals; report ROI + out-of-sample calibration
 calibration/nb.py      NB pmf + MLE fit of the dispersion
 calibration/compare.py Poisson vs NB reliability head-to-head
 calibration/backtest.py  Poisson baseline reliability (kept for reference)
@@ -100,5 +102,15 @@ that better — but they supply the ingestion layer:
   Props-vs-Projections); only play legs where both agree on the same side.
 - **Phase 4:** entry construction (short 2–3 pick sets, correlation, contrarian
   fades) per thelines.com Pick6 strategy.
-- **Phase 5:** log `pick6_entries.csv`, grade daily, prove ROI on paper before
-  real stakes.
+- **Phase 5 (built, accumulating):** `log_entries.py` records each day's paper
+  entries to `data/pick6_entries.csv`; `grade.py` scores them against MLB
+  StatsAPI finals and reports entry ROI + **out-of-sample leg calibration** (the
+  real test of the NB fit, which was in-sample on 147 starts). Daily loop:
+  `log_entries.py <date>` in the morning, `grade.py` after games settle. Needs a
+  couple of weeks of graded entries before any real stake.
+
+### Daily use
+```
+python pick6/log_entries.py 2026-07-05   # morning: record paper entries
+python pick6/grade.py                     # after games: grade + running ROI/calibration
+```
