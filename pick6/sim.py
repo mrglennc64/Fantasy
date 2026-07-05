@@ -20,22 +20,34 @@ import math
 from itertools import combinations
 
 from config import breakeven_per_leg, entry_ev, entry_multiplier
+from dispersion import DISPERSION_R
+
+# ---- step 1: side probabilities from a calibrated Negative-Binomial ----------
+# Phase 2 (calibration/compare.py) showed Poisson under-disperses strikeouts and
+# is over-confident in the 60-65% band Pick6 legs live in. NB with the fitted
+# dispersion (pick6/dispersion.py) cut the mean reliability gap from 3.2 -> 1.6.
+
+_EPS = 1e-9
 
 
-# ---- step 1: side probabilities from a Poisson (swap for NegBinomial once the
-# calibration backtest confirms overdispersion) -------------------------------
+def nb_pmf(k: int, mu: float, r: float = DISPERSION_R) -> float:
+    mu = max(mu, _EPS)
+    logp = (math.lgamma(k + r) - math.lgamma(r) - math.lgamma(k + 1)
+            + r * math.log(r / (r + mu)) + k * math.log(mu / (r + mu)))
+    return math.exp(logp)
 
-def pois_pmf(k: int, lam: float) -> float:
+
+def pois_pmf(k: int, lam: float) -> float:  # kept for reference / backtests
     return math.exp(-lam) * lam ** k / math.factorial(k)
 
 
-def p_more(lam: float, line: float) -> float:
-    """P(strikeouts > line) for a half-integer line under Poisson(lam).
+def p_more(lam: float, line: float, r: float = DISPERSION_R) -> float:
+    """P(strikeouts > line) for a half-integer line under NB(mean=lam, size=r).
 
     More wins on K >= ceil(line); e.g. line 5.5 -> More needs K >= 6.
     """
     need = math.ceil(line)
-    return 1.0 - sum(pois_pmf(i, lam) for i in range(need))
+    return max(0.0, 1.0 - sum(nb_pmf(i, lam, r) for i in range(need)))
 
 
 def score_leg(leg: dict) -> dict:

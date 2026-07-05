@@ -30,22 +30,25 @@ Per-leg breakeven for an N-pick power play at multiplier `M`: `p = (1/M)^(1/N)`.
 (Verify multipliers live — DK changes them and applies per-leg flex boosts like
 the 1.1× / 0.9× seen on the board; `config.entry_multiplier` handles boosts.)
 
-## Calibration status (the make-or-break number)
+## Calibration status — Phase 2 DONE (Negative-Binomial)
 
-`calibration/backtest.py` on 147 settled starts (`live_settled.csv`, 6/28–7/3):
+`calibration/compare.py` fits the K overdispersion by MLE on 147 settled starts
+(`live_settled.csv`, 6/28–7/3) and compares side-probability reliability:
 
-```
-MAE 2.01 K   bias −0.25 K (model OVER-projects)
-pred 0.60-0.65  ->  realized 55.4%   (−6.9 pts, OVERCONFIDENT)
-pred 0.90-1.01  ->  realized 89.1%   (−5.0 pts, OVERCONFIDENT)
-weighted mean |gap| = 3.2 pts   (want < ~3 before trusting breakevens)
-```
+| Model | Weighted mean \|gap\| | 60–65% band (Pick6 zone) |
+|---|--:|--:|
+| Poisson (old) | 3.2 pts | −6.9 pts (overconfident) |
+| **NegBinomial (fitted r=16.6)** | **1.6 pts** | **+0.4 pts (calibrated)** |
+| NB + 0.85 λ-shrink | 2.9 pts | −4.9 (overcorrects — rejected) |
 
-**Verdict:** the model is overconfident precisely in the 60–65% band — the exact
-band Pick6 legs live in. This is the same failure that sank the 7/4 card
-(Imanaga "62% Under" → 8 K). **Fix calibration (Negative-Binomial for K
-overdispersion, and/or shrink λ) before staking anything.** That is Phase 2 and
-it gates everything downstream.
+Fitted dispersion `r=16.6` ⇒ K variance ≈1.32× Poisson (real 10-K tails). This
+is now the live model: `pick6/dispersion.py` holds `r`, `pick6/sim.p_more` uses
+NB. The old Poisson result (which mirrored the 7/4 Imanaga "62%→miss" failure)
+is preserved as the baseline in `calibration/backtest.py`.
+
+Residual: the 90%+ bucket is still ~5 pts overconfident, but such legs imply
+DK's line is wildly off and are rare in practice. Re-fit `r` as settled n grows
+(target ≥400).
 
 ## Layout
 
@@ -81,10 +84,12 @@ that better — but they supply the ingestion layer:
 
 ### Roadmap
 - **Phase 0 (done):** multiplier/breakeven math, entry builder, outcome matrix.
-- **Phase 1:** automate DK Pick6 board capture (currently manual from screenshot)
-  + StatsAPI probable-pitcher feed.
-- **Phase 2 (critical):** calibrate — NegBinomial `p_more`, refit overdispersion
-  on settled data, re-run backtest until mean |gap| < 3 pts.
+- **Phase 2 (done):** NegBinomial `p_more` fitted on settled data; mean |gap|
+  3.2 → 1.6 pts. Re-fit r as the sample grows.
+- **Phase 1 (next):** the live slate API only returns today's pre-selected card,
+  so the picker matches ~3 of 12 board pitchers. Need λ for ALL probable
+  starters — add a StatsAPI `hydrate=probablePitcher` feed (lbenz730 pattern) +
+  automate DK board capture (currently manual from screenshot).
 - **Phase 3:** cross-check every leg against a second projection (RotoWire
   Props-vs-Projections); only play legs where both agree on the same side.
 - **Phase 4:** entry construction (short 2–3 pick sets, correlation, contrarian
