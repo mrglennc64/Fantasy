@@ -151,7 +151,13 @@ install `deploy/fantasy.nginx`, create `/var/www/fantasy`, run certbot. Then
 shows today's entries, all scored legs (Pitcher↔Batter toggle) with the RotoWire
 column, and the paper track record (ROI + out-of-sample calibration).
 
-**Daily autopilot:** `deploy/cron_daily.sh` (cloned to `/opt/fantasy` on kv8,
-run from crontab) pulls the repo, grades settled entries, logs today's entries,
-rebuilds + publishes the dashboard, and commits the graded record back. Capture
-the DK boards into `data/` and commit; the cron does the rest.
+**Daily autopilot (hardened):** run `sudo bash deploy/setup_vps.sh` on kv8 ONCE.
+It creates a dedicated **non-root `fantasy` user** that owns `/opt/fantasy` +
+`/var/www/fantasy`, installs logrotate, and installs the daily crontab **for
+that user** (not root) — so a repo compromise can only touch Fantasy's own
+files, not strike/nginx/certs/the rest of the box. The daily `cron_daily.sh`
+pulls the repo, grades settled entries, logs today's entries, rebuilds +
+publishes the dashboard, keeps a 14-day-pruned backup of the record, and writes
+a logrotated log. The entries CSV is gitignored VPS-owned runtime state (kv8 has
+no push creds). Capture the DK boards into `data/` and commit; the cron does the
+rest. To de-risk further, pin `git pull` to a reviewed commit.

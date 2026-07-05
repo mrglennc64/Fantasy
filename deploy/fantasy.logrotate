@@ -1,0 +1,9 @@
+# /etc/logrotate.d/fantasy — keep the cron log from growing forever.
+/opt/fantasy/logs/cron.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
