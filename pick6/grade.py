@@ -17,6 +17,8 @@ import os
 import unicodedata
 import urllib.request
 
+from config import MIN_PICKS, entry_multiplier
+
 LOG = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
 FIELDS = ["date", "entry_id", "platform", "n_picks", "mult", "stake", "leg_idx",
           "pitcher", "game", "market", "side", "line", "lam", "model_p", "boost",
@@ -74,6 +76,14 @@ def leg_won(side: str, line: float, actual: int) -> bool:
     return actual > line if side == "more" else actual < line
 
 
+def leg_result(side: str, line: float, actual: int) -> str:
+    """'win' / 'loss' / 'push'. Whole-number pick'em lines (e.g. 5.0) PUSH when
+    the actual lands exactly on the line — a refund, not a loss."""
+    if actual == line and float(line).is_integer():
+        return "push"
+    return "win" if leg_won(side, line, actual) else "loss"
+
+
 def main() -> None:
     if not os.path.exists(LOG):
         print(f"No log at {LOG} — run log_entries.py first.")
@@ -90,9 +100,9 @@ def main() -> None:
         actual = results.get(r["date"], {}).get(norm(r["pitcher"]), {}).get(market)
         if actual is None:
             continue  # game not Final yet (or player didn't play) — leave pending
-        won = leg_won(r["side"], float(r["line"]), actual)
+        res = leg_result(r["side"], float(r["line"]), actual)
         r["actual_ks"] = actual   # column holds the market's actual value
-        r["leg_won"] = "1" if won else "0"
+        r["leg_won"] = {"win": "1", "loss": "0", "push": "P"}[res]
         graded_now += 1
 
     with open(LOG, "w", newline="", encoding="utf-8") as f:
@@ -111,14 +121,24 @@ def main() -> None:
         if any(l["leg_won"] == "" for l in legs):
             continue
         graded_ct += 1
-        stake = float(legs[0]["stake"]); mult = float(legs[0]["mult"])
-        won = all(l["leg_won"] == "1" for l in legs)
-        p = stake * (mult - 1) if won else -stake
-        staked += stake; pnl += p; won_ct += won
-        tag = "WON " if won else "lost"
+        stake = float(legs[0]["stake"])
+        platform = legs[0].get("platform") or "dk_pick6"
+        # A pushed leg drops out: a power play re-prices at the lower tier; if too
+        # few legs remain, the entry is voided (stake refunded).
+        live = [l for l in legs if l["leg_won"] != "P"]
+        if any(l["leg_won"] == "0" for l in live):
+            p, tag = -stake, "lost"
+        elif len(live) < MIN_PICKS:
+            p, tag = 0.0, "void"
+        else:
+            m = entry_multiplier(len(live), platform=platform)
+            p, tag = stake * (m - 1), "WON "
+        staked += stake; pnl += p; won_ct += (tag == "WON ")
+        pushes = len(legs) - len(live)
         names = " + ".join(f"{l['pitcher'].split()[-1]} {l['side'][0].upper()}{l['line']}"
                            for l in legs)
-        print(f"  {eid}  {tag}  {names}   P&L ${p:+.2f}")
+        print(f"  {eid}  {tag}  {names}{' ('+str(pushes)+' push)' if pushes else ''}"
+              f"   P&L ${p:+.2f}")
     if graded_ct:
         roi = pnl / staked * 100 if staked else 0
         print(f"\n  {int(won_ct)}/{int(graded_ct)} entries won   "
@@ -126,9 +146,9 @@ def main() -> None:
     else:
         print("  (no fully-graded entries yet)")
 
-    # ---- leg-level calibration (out-of-sample NB check) ----------------------
+    # ---- leg-level calibration (pushes excluded — they're refunds) ----------
     graded_legs = [(float(l["model_p"]), l["leg_won"] == "1")
-                   for l in rows if l["leg_won"] != ""]
+                   for l in rows if l["leg_won"] in ("1", "0")]
     if graded_legs:
         n = len(graded_legs)
         pred = sum(p for p, _ in graded_legs) / n
