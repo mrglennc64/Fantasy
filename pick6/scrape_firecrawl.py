@@ -31,7 +31,9 @@ BATTER = {"hits", "total_bases", "home_runs", "rbi", "runs", "hits_runs_rbis"}
 
 
 def fc_scrape(url: str, key: str) -> str:
-    body = json.dumps({"url": url, "formats": ["rawHtml"]}).encode()
+    # maxAge=0 forces a LIVE fetch — Firecrawl v2 otherwise serves a cached copy
+    # for up to 2 days, which made every scrape today return yesterday's board.
+    body = json.dumps({"url": url, "formats": ["rawHtml"], "maxAge": 0}).encode()
     req = urllib.request.Request(
         "https://api.firecrawl.dev/v2/scrape", data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
