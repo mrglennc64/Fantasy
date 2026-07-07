@@ -65,13 +65,18 @@ th{color:var(--mut);font-weight:600;font-size:12px}td.n,th.n{text-align:right;fo
 .pos{color:var(--pos)}.neg{color:var(--neg)}.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:12px;background:#21262d}
 .kpi{display:flex;gap:24px;flex-wrap:wrap}.kpi div{min-width:90px}.kpi .v{font-size:22px;font-weight:700}.kpi .l{color:var(--mut);font-size:12px}
 .warn{background:#2d2212;border-color:#5c4813;color:#e3b341;font-size:13px}
+.banner{border-radius:10px;padding:12px 16px;margin:0 0 18px;font-size:15px;font-weight:600;border:1px solid}
+.banner.live{background:#122117;border-color:#238636;color:#3fb950}
+.banner.wait{background:#2d2212;border-color:#9e6a03;color:#e3b341}
+.banner small{display:block;font-weight:400;font-size:12px;opacity:.85;margin-top:2px}
 .toggle button{background:transparent;border:1px solid var(--line);color:var(--mut);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:13px;margin-left:4px}
 .toggle button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 @media(prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#fff;--line:#d0d7de;--fg:#1f2328;--mut:#636c76}}
 """
 
 
-def render(date, res, tr):
+def render(date, res, tr, status="live", today=None, gen=""):
+    today = today or date
     legs = sorted(res["legs"], key=lambda l: -_p(l))
     entry_rows = ""
     for i, e in enumerate(res["entries"], 1):
@@ -109,11 +114,20 @@ def render(date, res, tr):
                 f"(gap {(cal[2]-cal[1])*100:+.1f} pts, n={cal[0]})") if cal else "no graded legs yet"
     roicls = "pos" if tr["pnl"] >= 0 else "neg"
 
+    if status == "live":
+        banner = (f'<div class="banner live">🟢 LIVE — today\'s board ({today}) is up. '
+                  f'These are today\'s picks.<small>updated {gen} · bet before first pitch</small></div>')
+    else:
+        banner = (f'<div class="banner wait">🟠 WAITING — today\'s ({today}) board isn\'t '
+                  f'posted yet. Below is the most recent card ({date}), not today\'s.'
+                  f'<small>checked {gen} · today\'s picks appear here automatically once the board goes live</small></div>')
+
     return f"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Fantasy — DK Pick6 edge</title><style>{CSS}</style></head><body><div class=wrap>
-<h1>Fantasy · DraftKings Pick6 edge</h1>
-<div class=sub>Pitcher strikeouts (calibrated) + batter props (StatsAPI baseline) · slate {date} · PAPER ONLY</div>
+<title>Fantasy — pick'em edge</title><style>{CSS}</style></head><body><div class=wrap>
+<h1>Fantasy · pick'em edge</h1>
+<div class=sub>Pitcher strikeouts (calibrated) + batter props (StatsAPI baseline) · showing slate {date} · PAPER ONLY</div>
+{banner}
 
 <div class="card"><h2>Paper track record</h2><div class=kpi>
 <div><div class="v {roicls}">{tr['roi']:+.1f}%</div><div class=l>ROI</div></div>
@@ -162,15 +176,29 @@ def _kept(l, res):
 
 
 def main():
-    date = sys.argv[1] if len(sys.argv) > 1 else "2026-07-05"
+    import datetime
+    today = sys.argv[1] if len(sys.argv) > 1 else "2026-07-05"
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
         os.path.dirname(__file__), "dist", "index.html")
-    res = compute_entries(date)
+
+    # LIVE if today's board exists; otherwise WAITING — render the most recent
+    # captured board so the page always shows a real card, clearly labelled.
+    boards = os.path.join(os.path.dirname(__file__), "..", "data", "boards")
+    if os.path.exists(os.path.join(boards, f"{today}.csv")):
+        render_date, status = today, "live"
+    else:
+        avail = sorted(b[:-4] for b in (os.listdir(boards) if os.path.isdir(boards) else [])
+                       if b.endswith(".csv") and not b.endswith("_batters.csv"))
+        render_date, status = (avail[-1] if avail else today), "waiting"
+
+    gen = datetime.datetime.now(datetime.timezone.utc).strftime("%b %d %H:%M UTC")
+    res = compute_entries(render_date)
     tr = track_record()
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
-        f.write(render(date, res, tr))
-    print(f"wrote {out}  ({len(res['legs'])} legs, {len(res['entries'])} entries)")
+        f.write(render(render_date, res, tr, status=status, today=today, gen=gen))
+    print(f"wrote {out}  [{status}] showing {render_date} "
+          f"({len(res['legs'])} legs, {len(res['entries'])} entries)")
 
 
 if __name__ == "__main__":

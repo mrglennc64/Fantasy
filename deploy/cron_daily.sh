@@ -41,16 +41,12 @@ else
     echo "no FIRECRAWL_API_KEY in .env — skipping auto-scrape (paste a board instead)"
 fi
 
-# Only rebuild + publish once today's board exists — otherwise leave the last
-# good card up (don't wipe it with an empty "no board yet" page).
-if [ -f "$REPO/data/boards/$DATE.csv" ]; then
-    "$PY" pick6/log_entries.py "$DATE" || echo "log skipped (already logged)"
-    "$PY" web/build_site.py "$DATE" "$REPO/web/dist/index.html"
-    install -m 644 "$REPO/web/dist/index.html" "$WWW/index.html"
-    echo "published $DATE card"
-else
-    echo "no board for $DATE yet — leaving the last published card up"
-fi
+# Log entries only when today's board exists; always rebuild + publish —
+# build_site shows a clear LIVE (today's board up) or WAITING (today's board not
+# posted yet, showing the last card) banner, so the page is never blank.
+[ -f "$REPO/data/boards/$DATE.csv" ] && { "$PY" pick6/log_entries.py "$DATE" || echo "log skipped (already logged)"; }
+"$PY" web/build_site.py "$DATE" "$REPO/web/dist/index.html"
+install -m 644 "$REPO/web/dist/index.html" "$WWW/index.html"
 
 # housekeeping: dated backup of the record, prune backups older than 14 days.
 cp -f "$REPO/data/pick6_entries.csv" "$REPO/data/pick6_entries.$(date +%Y%m%d).bak" 2>/dev/null || true
