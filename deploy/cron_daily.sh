@@ -13,7 +13,12 @@ PY="$(command -v python3)"
 DATE="$(TZ=America/New_York date +%F)"
 
 cd "$REPO"
-git pull --quiet --ff-only || echo "git pull skipped (local changes / offline)"
+# Hard-sync to origin (robust: mode/CRLF drift or a wedged tree never blocks the
+# update). reset --hard only touches TRACKED files — gitignored runtime state
+# (boards, entries log, web/dist, .env) is preserved.
+git config core.fileMode false 2>/dev/null || true
+git fetch --quiet origin main 2>/dev/null && git reset --hard --quiet origin/main 2>/dev/null \
+    || echo "git sync skipped (offline)"
 # Secrets (FIRECRAWL_API_KEY=fc-...) live in /opt/fantasy/.env (gitignored).
 [ -f "$REPO/.env" ] && { set -a; . "$REPO/.env"; set +a; }
 
