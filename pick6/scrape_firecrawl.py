@@ -99,12 +99,24 @@ def main():
     print(f"parsed {len(rows)} standard lines: "
           + ", ".join(f"{m} {len(v)}" for m, v in sorted(by_market.items())))
 
+    # FRESHNESS GUARD: PrizePicks serves yesterday's board until it posts today's
+    # (e.g. overnight US time). If the scraped pitchers aren't on today's actual
+    # slate, it's stale — refuse to write so a good card is never overwritten.
+    pslate = slate_rows(date)
+    pitchers = by_market.get("strikeouts", [])
+    matched = sum(1 for r in pitchers if resolve(r["player"], pslate)[1]) if pitchers else 0
+    if not pitchers or matched < max(2, len(pitchers) * 0.5):
+        print(f"STALE BOARD: only {matched}/{len(pitchers)} scraped pitchers are on "
+              f"today's ({date}) slate — PrizePicks hasn't posted today's board yet. "
+              "Not writing (kept any existing card).")
+        return
+
     hdr = ["date", "player", "team", "game", "market", "platform", "line", "slot",
            "more_boost", "more_available", "less_available", "notes"]
     os.makedirs(BOARDS, exist_ok=True)
     for market, group in by_market.items():
         is_batter = market in BATTER
-        slate = [] if is_batter else slate_rows(date)
+        slate = [] if is_batter else pslate
         path = os.path.join(BOARDS, f"{date}{'_batters' if is_batter else ''}.csv")
         exists = os.path.exists(path)
         with open(path, "a", newline="", encoding="utf-8") as f:
