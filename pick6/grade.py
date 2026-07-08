@@ -1,28 +1,30 @@
-"""Grade logged Pick6 entries against real MLB strikeout results.
+"""Grade logged predictions against real MLB results.
 
     python grade.py
 
-Reads data/pick6_entries.csv, fills actual_ks + leg_won for any ungraded leg
-whose game is Final (MLB StatsAPI boxscores), rewrites the file, then prints:
-  - entry-level P&L / ROI (a power play pays only if ALL its legs hit)
-  - leg-level reliability (predicted model_p vs realized) — the OUT-OF-SAMPLE
-    check on the NB calibration; if these buckets drift, re-fit dispersion.
+Reads data/predictions_log.csv, fills actual + result for any ungraded row
+whose game is Final (MLB StatsAPI boxscores), rewrites the file, then prints
+the accuracy record:
+  - hit rate: how often the model's lean was on the correct side of the line
+  - calibration: stated probability vs realized frequency, split pitcher vs
+    batter — the OUT-OF-SAMPLE check on the model; if these buckets drift,
+    re-fit (dispersion for spread, projection.py shrink for the mean).
+
+First run migrates the legacy per-leg history (data/pick6_entries.csv) into
+the new log so the accuracy record keeps its continuity.
 """
 from __future__ import annotations
 
 import csv
 import json
-import math
 import os
 import unicodedata
 import urllib.request
 
-from config import MIN_PICKS, entry_multiplier
-
-LOG = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
-FIELDS = ["date", "entry_id", "platform", "n_picks", "mult", "stake", "leg_idx",
-          "pitcher", "game", "market", "side", "line", "lam", "model_p", "boost",
-          "rw_proj", "rw_agree", "actual_ks", "leg_won"]
+LOG = os.path.join(os.path.dirname(__file__), "..", "data", "predictions_log.csv")
+LEGACY = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
+FIELDS = ["date", "player", "game", "market", "platform", "side", "line",
+          "predicted", "model_p", "rw_proj", "rw_agree", "actual", "result"]
 
 
 def norm(name: str) -> str:
@@ -72,107 +74,107 @@ def final_stats(date: str) -> dict[str, dict[str, int]]:
     return out
 
 
-def leg_won(side: str, line: float, actual: int) -> bool:
-    return actual > line if side == "more" else actual < line
-
-
-def leg_result(side: str, line: float, actual: int) -> str:
-    """'win' / 'loss' / 'push'. Whole-number pick'em lines (e.g. 5.0) PUSH when
-    the actual lands exactly on the line — a refund, not a loss."""
+def result_of(side: str, line: float, actual: int) -> str:
+    """'1' (lean correct) / '0' (incorrect) / 'X' (actual landed exactly on a
+    whole-number line — no side of the line to be on; excluded from rates)."""
     if actual == line and float(line).is_integer():
-        return "push"
-    return "win" if leg_won(side, line, actual) else "loss"
+        return "X"
+    correct = actual > line if side == "more" else actual < line
+    return "1" if correct else "0"
+
+
+def migrate_legacy() -> None:
+    """One-time: fold the legacy per-leg history into predictions_log.csv.
+    Legacy rows repeat a leg once per set it appeared in — dedupe on
+    (date, player, market, line, side)."""
+    if os.path.exists(LOG) or not os.path.exists(LEGACY):
+        return
+    seen, rows = set(), []
+    for r in csv.DictReader(open(LEGACY, encoding="utf-8")):
+        key = (r["date"], r["pitcher"], r.get("market", "strikeouts"),
+               r["line"], r["side"])
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "date": r["date"], "player": r["pitcher"], "game": r["game"],
+            "market": r.get("market", "strikeouts"),
+            "platform": r.get("platform", ""), "side": r["side"],
+            "line": r["line"], "predicted": r["lam"], "model_p": r["model_p"],
+            "rw_proj": r.get("rw_proj", ""), "rw_agree": r.get("rw_agree", ""),
+            "actual": r.get("actual_ks", ""),
+            "result": {"1": "1", "0": "0", "P": "X"}.get(r.get("leg_won", ""), ""),
+        })
+    with open(LOG, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    print(f"Migrated {len(rows)} legacy rows -> {LOG}")
 
 
 def main() -> None:
+    migrate_legacy()
     if not os.path.exists(LOG):
-        print(f"No log at {LOG} — run log_entries.py first.")
+        print(f"No log at {LOG} — run log_predictions.py first.")
         return
     rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
 
-    pending_dates = sorted({r["date"] for r in rows if r["leg_won"] == ""})
+    pending_dates = sorted({r["date"] for r in rows if r["result"] == ""})
     results = {d: final_stats(d) for d in pending_dates}
     graded_now = 0
     for r in rows:
-        if r["leg_won"] != "":
+        if r["result"] != "":
             continue
         market = r.get("market", "strikeouts")
-        actual = results.get(r["date"], {}).get(norm(r["pitcher"]), {}).get(market)
+        actual = results.get(r["date"], {}).get(norm(r["player"]), {}).get(market)
         if actual is None:
             continue  # game not Final yet (or player didn't play) — leave pending
-        res = leg_result(r["side"], float(r["line"]), actual)
-        r["actual_ks"] = actual   # column holds the market's actual value
-        r["leg_won"] = {"win": "1", "loss": "0", "push": "P"}[res]
+        r["actual"] = actual
+        r["result"] = result_of(r["side"], float(r["line"]), actual)
         graded_now += 1
 
     with open(LOG, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         w.writeheader()
         w.writerows(rows)
-    print(f"Graded {graded_now} new legs.\n")
+    print(f"Graded {graded_now} new predictions.\n")
 
-    # ---- entry-level P&L (entry graded only when ALL its legs are graded) ----
-    entries: dict[str, list] = {}
-    for r in rows:
-        entries.setdefault(r["entry_id"], []).append(r)
-    staked = pnl = won_ct = graded_ct = 0.0
-    print("ENTRY RESULTS")
-    for eid, legs in sorted(entries.items()):
-        if any(l["leg_won"] == "" for l in legs):
+    graded = [r for r in rows if r["result"] in ("1", "0")]
+    if not graded:
+        print("No graded predictions yet.")
+        return
+
+    # ---- accuracy record ----------------------------------------------------
+    def _rate(rs):
+        n = len(rs)
+        hit = sum(1 for r in rs if r["result"] == "1")
+        pred = sum(float(r["model_p"]) for r in rs) / n
+        return n, hit / n, pred
+
+    print("ACCURACY RECORD (out-of-sample; exact-on-line outcomes excluded)")
+    groups = [("all", graded),
+              ("pitcher (K)", [r for r in graded
+                               if r.get("market", "strikeouts") == "strikeouts"]),
+              ("batter", [r for r in graded
+                          if r.get("market", "strikeouts") != "strikeouts"])]
+    for tag, rs in [(t, g) for t, g in groups if g]:
+        n, hit, pred = _rate(rs)
+        print(f"  {tag:12} n={n:<4} stated {pred*100:.1f}%  "
+              f"realized {hit*100:.1f}%  gap {(hit-pred)*100:+.1f} pts")
+
+    # calibration buckets: stated probability vs realized frequency
+    print("\nCALIBRATION BUCKETS")
+    bins = [(0.50, 0.55), (0.55, 0.60), (0.60, 0.65), (0.65, 0.70), (0.70, 1.01)]
+    for lo, hi in bins:
+        grp = [r for r in graded if lo <= float(r["model_p"]) < hi]
+        if not grp:
             continue
-        graded_ct += 1
-        stake = float(legs[0]["stake"])
-        platform = legs[0].get("platform") or "dk_pick6"
-        # A pushed leg drops out: a power play re-prices at the lower tier; if too
-        # few legs remain, the entry is voided (stake refunded).
-        live = [l for l in legs if l["leg_won"] != "P"]
-        if any(l["leg_won"] == "0" for l in live):
-            p, tag = -stake, "lost"
-        elif len(live) < MIN_PICKS:
-            p, tag = 0.0, "void"
-        else:
-            m = entry_multiplier(len(live), platform=platform)
-            p, tag = stake * (m - 1), "WON "
-        staked += stake; pnl += p; won_ct += (tag == "WON ")
-        pushes = len(legs) - len(live)
-        names = " + ".join(f"{l['pitcher'].split()[-1]} {l['side'][0].upper()}{l['line']}"
-                           for l in legs)
-        print(f"  {eid}  {tag}  {names}{' ('+str(pushes)+' push)' if pushes else ''}"
-              f"   P&L ${p:+.2f}")
-    if graded_ct:
-        roi = pnl / staked * 100 if staked else 0
-        print(f"\n  {int(won_ct)}/{int(graded_ct)} entries won   "
-              f"staked ${staked:.2f}   net ${pnl:+.2f}   ROI {roi:+.1f}%")
-    else:
-        print("  (no fully-graded entries yet)")
-
-    # ---- leg-level calibration (pushes excluded — they're refunds) ----------
-    # Split pitcher (calibrated K model) from batter (season-rate baseline):
-    # the two have separate failure modes, and a pooled gap points at the
-    # wrong fix (7/7: pooled -14 pts read as "re-fit dispersion" when the
-    # drift lived in the un-capped batter legs).
-    def _cal(legs):
-        n = len(legs)
-        pred = sum(p for p, _ in legs) / n
-        real = sum(1 for _, w in legs if w) / n
-        return n, pred, real
-
-    graded_legs = [(l.get("market") or "strikeouts", float(l["model_p"]),
-                    l["leg_won"] == "1")
-                   for l in rows if l["leg_won"] in ("1", "0")]
-    if graded_legs:
-        print("\nLEG CALIBRATION (out-of-sample)")
-        groups = [("all", [(p, w) for m, p, w in graded_legs]),
-                  ("pitcher (K)", [(p, w) for m, p, w in graded_legs
-                                   if m == "strikeouts"]),
-                  ("batter", [(p, w) for m, p, w in graded_legs
-                              if m != "strikeouts"])]
-        for tag, legs in [(t, g) for t, g in groups if g]:
-            n, pred, real = _cal(legs)
-            print(f"  {tag:12} n={n:<4} predicted {pred*100:.1f}%  "
-                  f"realized {real*100:.1f}%  gap {(real-pred)*100:+.1f} pts")
-        print("  (pitcher drift at scale => re-fit dispersion on FROZEN slates;"
-              " batter drift => baseline/matchup problem)")
+        n, hit, pred = _rate(grp)
+        print(f"  {lo:.2f}-{hi:4.2f}  n={n:<4} stated {pred*100:.1f}%  "
+              f"realized {hit*100:.1f}%  gap {(hit-pred)*100:+.1f} pts")
+    print("\n(pitcher drift at scale => re-fit the shrink coefficient on FROZEN"
+          "\n slates (calibration/fit_mean.py); batter drift => baseline/matchup"
+          "\n problem in batter_feed.py)")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,15 @@
-"""Phase 3 second-opinion cross-check via RotoWire's free projections endpoint.
+"""Second-opinion annotation via RotoWire's free projections endpoint.
 
-    GET rotowire.com/betting/mlb/tables/all-bets-props-plus-proj.php?prop={k|tb|runs|er}
-
-Each record has `betSubject` (player) and `proj` (RotoWire's projection). We
-compare the side RotoWire's proj implies (vs the DK line) to the side our model
-implies, and gate a leg unless they AGREE. This is the cheap guard against a
-single over-projected leg sinking a whole power play (see the 7/4 Imanaga miss).
+Each record has `betSubject` (player) and `proj` (RotoWire's projection — the
+field names are RotoWire's, from their URL/API shape). We compare the side of
+the line RotoWire's projection implies to the side our model leans, and attach
+the agreement flag to the row. ANNOTATION ONLY: every row is still scored and
+reported; the flag is displayed next to the numbers so disagreement is visible,
+never used to drop output.
 
 RotoWire exposes only k (strikeouts), tb (total bases), runs, er (earned runs)
 for free; hits/HR/RBI are paywalled -> those markets get no RotoWire opinion
-(cross-check returns None; wire a free baseline in crosscheck_baseline later).
+(annotation is None for them).
 """
 from __future__ import annotations
 
@@ -68,9 +68,9 @@ def _side(proj: float, line: float) -> str:
 def annotate(legs: list[dict]) -> None:
     """Attach rw_proj / rw_side / rw_agree to each leg (in place).
 
-    rw_agree: True (RotoWire agrees with the leg's model side), False (disagrees),
-    or None (RotoWire has no free projection for this player/market).
-    Requires each leg to already carry a model-chosen 'side'.
+    rw_agree: True (RotoWire leans the same side of the line), False (leans the
+    other way), or None (no free RotoWire projection for this player/market).
+    Requires each leg to already carry a model 'side'.
     """
     projs_by_market: dict[str, dict[str, float]] = {}
     for l in legs:
@@ -83,11 +83,3 @@ def annotate(legs: list[dict]) -> None:
             rs = _side(p, l["line"])
             l["rw_proj"], l["rw_side"] = p, rs
             l["rw_agree"] = (rs == l.get("side"))
-
-
-def gate(legs: list[dict], require_agree: bool = True) -> list[dict]:
-    """Drop legs RotoWire explicitly disagrees with. Legs with no RotoWire
-    opinion (rw_agree is None) pass through (flagged 'unconfirmed')."""
-    if not require_agree:
-        return legs
-    return [l for l in legs if l.get("rw_agree") is not False]

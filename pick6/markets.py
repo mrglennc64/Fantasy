@@ -62,9 +62,10 @@ def confidence(market: str) -> str:
 
 # Baseline markets have NO fitted dispersion, so their tail probabilities are
 # not trustworthy — a .380-SLG regular vs a 0.5 TB line prices at 85%+ on season
-# rate alone. Cap what a baseline leg may claim so it can never outrank a
-# calibrated leg on manufactured confidence (7/7: both entries anchored on an
-# 86% baseline batter leg). Remove per-market once its dispersion is fitted.
+# rate alone. Ceiling what a baseline row's probability may claim so it can
+# never outrank a fitted-dispersion row on manufactured confidence (7/7: an 86%
+# baseline batter probability dominated the day's ranking and realized far
+# lower). Remove per-market once its dispersion is fitted.
 BASELINE_P_CAP = 0.70
 
 

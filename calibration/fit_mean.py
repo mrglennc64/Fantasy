@@ -9,20 +9,21 @@ a mean error; this fits the mean directly.
 
 Data (leakage-free ONLY — every mu was logged BEFORE its game):
   1. mlb-edge exports/vps/predictions.csv  (6/6-6/13, logged pre-game, real lines)
-  2. data/pick6_entries.csv strikeout legs (7/5+, lam frozen at log time)
+  2. data/predictions_log.csv strikeout rows (frozen at log time; includes the
+     migrated legacy history)
   3. data/slates/<date>.csv frozen archives (7/8+, settled days only)
 Actuals come from MLB StatsAPI final boxscores (grade.final_stats).
 
 Two candidate corrections, evaluated WALK-FORWARD by date (fit on days < d,
 score day d) against the raw model:
   affine:  mu' = a + b*mu               (global recentering, no line needed)
-  anchor:  mu' = line + s*(mu - line)   (shrink toward the market line;
-                                         the pick'em line is a sharp consensus
-                                         mean — s<1 = "trust our disagreement
-                                         with the market only s much")
-Scored on what actually costs money: the model-chosen side's predicted p vs
-realized win rate (sim.score_leg logic), plus log-loss. Paste the winning
-constants into pick6/projection.py with provenance.
+  anchor:  mu' = line + s*(mu - line)   (shrink toward the published line;
+                                         the line is a sharp consensus mean —
+                                         s<1 = "trust our disagreement with
+                                         the consensus only s much")
+Scored on what the accuracy record measures: the model-chosen side's stated p
+vs realized frequency, plus log-loss. Paste the winning constants into
+pick6/projection.py with provenance.
 """
 from __future__ import annotations
 
@@ -39,7 +40,8 @@ from feed import norm                                        # noqa: E402
 
 HERE = os.path.dirname(__file__)
 PRED = r"C:\Users\carin\OneDrive\Dokument\stike\mlb-edge\data\exports\vps\predictions.csv"
-ENTRIES = os.path.join(HERE, "..", "data", "pick6_entries.csv")
+PRED_LOG = os.path.join(HERE, "..", "data", "predictions_log.csv")
+LEGACY_LOG = os.path.join(HERE, "..", "data", "pick6_entries.csv")
 SLATES = os.path.join(HERE, "..", "data", "slates")
 
 _EPS = 1e-9
@@ -63,7 +65,7 @@ def collect() -> list[dict]:
     rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    # 1) mlb-edge bet-time log: one row per pitcher-date, prefer draftkings line
+    # 1) mlb-edge pre-game log: one row per pitcher-date, prefer draftkings line
     best: dict[tuple[str, str], dict] = {}
     if os.path.exists(PRED):
         for r in csv.DictReader(open(PRED, encoding="utf-8")):
@@ -76,17 +78,21 @@ def collect() -> list[dict]:
     rows.extend(best.values())
     seen.update((r["date"], r["key"]) for r in rows)
 
-    # 2) our own logged strikeout legs (lam frozen at log time)
-    if os.path.exists(ENTRIES):
-        for r in csv.DictReader(open(ENTRIES, encoding="utf-8")):
+    # 2) our own logged strikeout rows (projection frozen at log time).
+    #    New log first; legacy history as fallback (grade.py migrates it).
+    for path, name_col, mu_col in ((PRED_LOG, "player", "predicted"),
+                                   (LEGACY_LOG, "pitcher", "lam")):
+        if not os.path.exists(path):
+            continue
+        for r in csv.DictReader(open(path, encoding="utf-8")):
             if (r.get("market") or "strikeouts") != "strikeouts":
                 continue
-            key = (r["date"], norm(r["pitcher"]))
+            key = (r["date"], norm(r[name_col]))
             if key in seen:
                 continue
             seen.add(key)
             rows.append({"date": r["date"], "key": key[1],
-                         "mu": float(r["lam"]), "line": float(r["line"])})
+                         "mu": float(r[mu_col]), "line": float(r["line"])})
 
     # 3) frozen slate archives (only days that have settled by run time)
     if os.path.isdir(SLATES):
@@ -204,8 +210,8 @@ def evaluate(pairs: list[dict]) -> None:
         print(f"  {name:10} {n:>4} {pred*100:>9.1f}% {real*100:>8.1f}% "
               f"{(real-pred)*100:>+6.1f}p {ll:>9.4f}")
 
-    # confident-bucket view: the legs the picker actually bets (p >= 0.65)
-    print("\n  CONFIDENT LEGS ONLY (predicted p >= 0.65 — what the picker bets)")
+    # confident-bucket view: the rows that dominate the confidence ranking
+    print("\n  HIGH-CONFIDENCE ROWS ONLY (stated p >= 0.65)")
     for name, legs in scored.items():
         hi = [(p, w) for p, w, _ in legs if p >= 0.65]
         if not hi:
@@ -220,7 +226,7 @@ def evaluate(pairs: list[dict]) -> None:
 
 def main() -> None:
     rows = collect()
-    print(f"collected {len(rows)} frozen bet-time projections; settling vs StatsAPI...")
+    print(f"collected {len(rows)} frozen pre-game projections; settling vs StatsAPI...")
     pairs = settle(rows)
     if len(pairs) < 60:
         print(f"only {len(pairs)} settled — too thin, aborting.")
@@ -248,7 +254,7 @@ def main() -> None:
     print("\n=> paste the winning correction into pick6/projection.py (with this"
           "\n   run's numbers as provenance). If 'raw' wins walk-forward, the June"
           "\n   sample doesn't support a correction — the July drift is then either"
-          "\n   variance or a model change since 6/13, and the honest fix is capping.")
+          "\n   variance or a model change since 6/13; keep the anchor until data says otherwise.")
 
 
 if __name__ == "__main__":

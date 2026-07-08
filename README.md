@@ -1,167 +1,88 @@
-# Fantasy — multi-platform pick'em edge (MLB)
+# Fantasy — MLB prop projection system
 
-Tailors the **strike / mlb-edge** projections to **pick'em fantasy** props across
-platforms — **PrizePicks, Underdog, DraftKings Pick6, Sleeper, Betr, ParlayPlay**
-(each sets its own projection line; you pick More/Less; a *power play* pays a
-fixed multiplier only if **every** leg hits). The projection is platform-agnostic;
-only the LINE and the PAYOUT table differ, so the picker **line-shops** every leg
-to the best-paying app and builds the best **2 / 3 / 4 / 5-pick** at each size.
-Markets: pitcher strikeouts (calibrated) + batter hits/TB/HR/RBI/runs (baseline).
+Daily numeric projections for MLB player props (pitcher strikeouts + batter
+hits / total bases / home runs / RBI / runs), scored against the prop lines
+published by pick'em platforms (PrizePicks, DK Pick6, Underdog, …), with an
+automatically graded accuracy record. Live at
+**https://fantasy.perfecthold.online** (rebuilt hourly).
 
-> **PAPER ONLY — NOT betting advice.** The single-leg K model over-projects and
-> is not yet calibrated (see below). Everything here is machinery + measurement,
-> not a proven edge.
+The system always outputs real numbers for every matched board row:
 
-## Why Pick6 is a different problem than sportsbook props
+| output | meaning |
+|---|---|
+| `predicted` | raw model projection (e.g. 6.83 strikeouts) |
+| `P(more)` / `P(less)` | probability the actual lands above/below the published line |
+| `lean` | the side of the line with the higher probability |
+| `P` | that side's probability — the model's stated confidence |
 
-| | Sportsbook (current mlb-edge) | DraftKings Pick6 |
-|---|---|---|
-| Line + price | line **and** American odds (vig) | one projection number, **no odds** |
-| Edge source | `model_prob − implied_prob` (beat the vig) | `model P(side)` vs DK's soft line |
-| Payout | per-leg decimal odds | fixed multiplier by pick count, **all-or-nothing** |
-| What matters most | finding mispriced odds | **model calibration** (no market to bail you out) |
+Nothing is filtered, suppressed, or toggled. Rows are ordered by confidence;
+low-information probabilities near 50% are shown as exactly that.
 
-Per-leg breakeven for an N-pick power play at multiplier `M`: `p = (1/M)^(1/N)`.
+## How the numbers are made
 
-| Picks | Base mult | Breakeven / leg |
-|--:|--:|--:|
-| 2 | 3× | 57.7% |
-| 3 | 6× | 55.0% |
-| 4 | 10× | 56.2% |
-| 5 | 20× | 54.9% |
-| 6 | 35× | 55.3% |
+1. **Board capture** — `pick6/scrape_firecrawl.py` pulls the day's published
+   lines (PrizePicks JSON:API via Firecrawl) into `data/boards/<date>.csv`,
+   with a freshness guard against yesterday's board.
+2. **Projections** —
+   - *Pitcher strikeouts*: `expected_ks` from the strike/mlb-edge slate
+     (`pick6/feed.py`).
+   - *Batter markets*: StatsAPI season rates × projected plate appearances,
+     adjusted for opposing starter and platoon split (`pick6/batter_feed.py`).
+   - *Consensus (candidate source)*: FantasyPros daily projections are frozen
+     every day (`pick6/consensus.py`) so their predictive value can be
+     measured before they feed anything.
+3. **Probabilities** (`pick6/scoring.py`) —
+   - Strikeouts: Negative-Binomial with dispersion fitted on settled starts
+     (`pick6/dispersion.py`, r = 16.6, PIT-validated on frozen data).
+   - The strikeout **mean is anchored to the published line** by a
+     continuous shrink coefficient (`pick6/projection.py`). Fitted 2026-07-08
+     on 164 frozen pre-game projections: s = 0.00 — the raw projection's
+     disagreement with the line showed no walk-forward information, so stated
+     probabilities honestly sit near 50% until data earns the coefficient up.
+   - Markets without a fitted dispersion carry a 70% probability ceiling
+     (`pick6/markets.py`).
+   - RotoWire's free projection is attached to each row as an independent
+     second opinion (`pick6/crosscheck.py`) — displayed, never a filter.
+4. **Record & grading** — every scored row is logged once per day
+   (`pick6/log_predictions.py` → `data/predictions_log.csv`, plus a frozen
+   `_scored.json` snapshot so the dashboard's numbers never drift after
+   logging). `pick6/grade.py` fills actuals from MLB StatsAPI final boxscores
+   and prints hit rate + calibration (stated vs realized, pitcher/batter
+   split, probability buckets).
 
-(Verify multipliers live — DK changes them and applies per-leg flex boosts like
-the 1.1× / 0.9× seen on the board; `config.entry_multiplier` handles boosts.)
+## Calibration workflow (all fits on FROZEN data only)
 
-## Calibration status — Phase 2 DONE (Negative-Binomial)
+- `pick6/archive_slate.py` — freezes each day's slate projections at
+  generation time. **Never fit on `/v2/slate` re-projections of past dates**:
+  the API recomputes with current season stats, leaking outcomes into the fit
+  (it once drove the dispersion to r≈500, i.e. fake-Poisson).
+- `calibration/fit_mean.py` — fits/validates the mean corrections
+  (affine and line-anchor) walk-forward; source of the shrink coefficient.
+- `calibration/refit_dispersion.py` + `walk_forward.py` — re-fit/validate the
+  NB dispersion with held-out PIT coverage.
+- `calibration/backtest.py`, `compare.py`, `correlation.py`, `nb.py` —
+  reliability references (NB vs Poisson, day-factor estimation).
+- `pick6/correlation.py` — shared day-factor model (τ ≈ 0.08): joint
+  probability of several leans landing together, correlation-corrected.
+- `pick6/config.py` — platform reference tables (published multipliers and
+  the per-selection probability they imply); context for analyses only,
+  never an input to scoring.
 
-`calibration/compare.py` fits the K overdispersion by MLE on 147 settled starts
-(`live_settled.csv`, 6/28–7/3) and compares side-probability reliability:
+## Ops
 
-| Model | Weighted mean \|gap\| | 60–65% band (Pick6 zone) |
-|---|--:|--:|
-| Poisson (old) | 3.2 pts | −6.9 pts (overconfident) |
-| **NegBinomial (fitted r=16.6)** | **1.6 pts** | **+0.4 pts (calibrated)** |
-| NB + 0.85 λ-shrink | 2.9 pts | −4.9 (overcorrects — rejected) |
+- VPS cron (`deploy/cron_daily.sh`) runs hourly: grade → freeze slate +
+  consensus → capture board → log predictions → rebuild + publish the
+  dashboard (`web/build_site.py`). All steps are poll-safe no-ops once done.
+- Runtime state (`data/predictions_log.csv`, boards, slates) is gitignored
+  and owned by the host that runs the cron; `data/pick6_entries.csv` is the
+  frozen legacy per-row history, migrated into the log by `grade.py`.
+- A pre-commit hook (`.githooks/pre-commit`, enable with
+  `git config core.hooksPath .githooks`) blocks reintroduction of the
+  legacy terminology this repo removed on 2026-07-08 (see History).
 
-Fitted dispersion `r=16.6` ⇒ K variance ≈1.32× Poisson (real 10-K tails). This
-is now the live model: `pick6/dispersion.py` holds `r`, `pick6/sim.p_more` uses
-NB. The old Poisson result (which mirrored the 7/4 Imanaga "62%→miss" failure)
-is preserved as the baseline in `calibration/backtest.py`.
+## History
 
-Residual: the 90%+ bucket is still ~5 pts overconfident, but such legs imply
-DK's line is wildly off and are rare in practice. Re-fit `r` as settled n grows
-(target ≥400).
-
-## Layout
-
-```
-pick6/config.py        multiplier table + breakeven + entry-EV math
-pick6/dispersion.py    fitted NB dispersion r (from calibration)
-pick6/markets.py       market registry: per-prop distribution (K ready; TB/runs/ER/hits/HR scaffolded)
-pick6/sim.py           market-aware leg scoring, availability + same-game guards, entry builder, outcome matrix
-pick6/crosscheck.py    RotoWire second-opinion gate (free proj endpoint; drops disagreements)
-pick6/correlation.py   day-factor model: correlation-adjusted joint P + outcome matrix
-pick6/feed.py          full-slate λ feed (/v2/slate rows + /v2/predict fallback, accent-folded names)
-pick6/batter_feed.py   StatsAPI season-rate batter projections (hits/TB/HR/RBI/runs)
-pick6/pick6_today.py   join λ to the DK board, score whole board, step down 3->2 picks, build entries
-pick6/log_entries.py   append a day's paper entries to data/pick6_entries.csv (idempotent)
-pick6/grade.py         grade logged legs vs MLB StatsAPI finals; report ROI + out-of-sample calibration
-calibration/nb.py      NB pmf + MLE fit of the dispersion
-calibration/compare.py Poisson vs NB reliability head-to-head
-calibration/backtest.py  Poisson baseline reliability (kept for reference)
-web/build_site.py      generate the static dashboard (entries + track record + calibration)
-deploy/fantasy.nginx   nginx server block for fantasy.perfecthold.online
-deploy/deploy.sh       build + rsync the dashboard to the VPS
-data/pick6_board_*.csv   captured DK Pick6 boards (market + line + boosts + availability)
-data/pick6_entries.csv   logged paper entries (graded by grade.py)
-```
-
-Run:
-```
-python pick6/config.py                 # breakeven reference table
-python calibration/backtest.py         # calibration reliability (uses C:\strike-data\...\live_settled.csv)
-python pick6/pick6_today.py 2026-07-05 # score today's DK board with the live slate
-```
-
-## Data-layer plan (from reference-repo research)
-
-Three repos were reviewed. **None projects strikeouts** — mlb-edge already does
-that better — but they supply the ingestion layer:
-
-- **lbenz730/fantasy_baseball** — MLB StatsAPI boxscore scraper + ready-made
-  per-start pitcher K logs (2020–2026, ~11k rows) → calibration/training fuel.
-  Add `hydrate=probablePitcher` to the schedule call for daily starters.
-- **fantasy-toolz/mlb-predictions** — Baseball Savant (Statcast) pitcher CSV
-  fetcher + a DraftKings pitcher-name/odds JSON parser → line ingestion + name
-  matching. (Skip its team win-prob model.)
-- **edwarddistel/yahoo-fantasy-baseball-reader** — tangential (season-long
-  fantasy). Keep only its OAuth2 token-refresh pattern if Yahoo data is ever
-  needed.
-
-### Roadmap
-- **Phase 0 (done):** multiplier/breakeven math, entry builder, outcome matrix.
-- **Phase 2 (done):** NegBinomial `p_more` fitted on settled data; mean |gap|
-  3.2 → 1.6 pts. Re-fit r as the sample grows.
-- **Phase 1 (done):** `/v2/slate` actually returns ~30 `rows` (whole slate), not
-  just the 4-leg card — `feed.py` reads those (accent-folded name match, per-
-  pitcher `/v2/predict` fallback) so the picker scores all 12 board pitchers.
-  Also fixed two real bugs: enforce DK More/Less availability (was recommending
-  unofferable sides) and step 3→2 picks when the board is thin. Still manual:
-  DK board capture from screenshot — automate next.
-- **Phase 3 (done):** RotoWire second-opinion gate. Their free JSON endpoint
-  (`/betting/mlb/tables/all-bets-props-plus-proj.php?prop=k`) gives a `proj` per
-  pitcher; `crosscheck.py` drops any leg RotoWire disagrees with (e.g. 7/5
-  Bradish: model More vs RotoWire Under → gated). Legs RotoWire doesn't cover
-  pass through flagged "unconfirmed". Coverage is partial (a handful of pitchers/
-  day), so it mostly kills bad legs rather than confirming good ones.
-- **Multi-market (done):** `markets.py` makes scoring market-aware via the
-  board's `market` column. **Pitcher strikeouts** = calibrated (mlb-edge λ +
-  fitted NB). **Batter hits / total bases / home runs / RBI / runs** now score
-  off a free **StatsAPI season-rate baseline** (`batter_feed.py`): season
-  per-AB/PA rates × projected PAs by lineup slot. Batter props are labelled
-  **baseline / lower-confidence** — matchup-neutral (ignore the opposing pitcher
-  + park) and their dispersion isn't fitted yet. RotoWire cross-checks TB/runs
-  for free; hits/HR/RBI stay unconfirmed. Capture batter lines in
-  `data/pick6_board_<date>_batters.csv` (DK's separate tabs). The dashboard has a
-  Pitcher↔Batter toggle. Entries can mix markets, which lowers correlation.
-- **Phase 4 (done):** day-level correlation. Settled data has a real "K
-  environment" factor — after removing sampling noise, latent sd **τ≈0.081**
-  (`calibration/correlation.py`). `correlation.py` models a shared multiplier
-  D~Normal(1,τ) on every leg's λ and integrates it out: same-side entries (all
-  Unders) are positively correlated → higher true P(all-hit) but a fatter tail;
-  mixed entries score lower. The picker now ranks and sizes on the
-  correlation-adjusted EV and flags same-side concentration. Still short-slate
-  (2–3 picks) per thelines.com.
-- **Phase 5 (built, accumulating):** `log_entries.py` records each day's paper
-  entries to `data/pick6_entries.csv`; `grade.py` scores them against MLB
-  StatsAPI finals and reports entry ROI + **out-of-sample leg calibration** (the
-  real test of the NB fit, which was in-sample on 147 starts). Daily loop:
-  `log_entries.py <date>` in the morning, `grade.py` after games settle. Needs a
-  couple of weeks of graded entries before any real stake.
-
-### Daily use
-```
-python pick6/log_entries.py 2026-07-05   # morning: record paper entries
-python pick6/grade.py                     # after games: grade + running ROI/calibration
-```
-
-## Deploy (fantasy.perfecthold.online)
-
-Static dashboard on the kv8 VPS (46.202.143.253), same host as strike. One-time:
-install `deploy/fantasy.nginx`, create `/var/www/fantasy`, run certbot. Then
-`deploy/deploy.sh [date]` builds `web/dist/index.html` and rsyncs it up. The page
-shows today's entries, all scored legs (Pitcher↔Batter toggle) with the RotoWire
-column, and the paper track record (ROI + out-of-sample calibration).
-
-**Daily autopilot (hardened):** run `sudo bash deploy/setup_vps.sh` on kv8 ONCE.
-It creates a dedicated **non-root `fantasy` user** that owns `/opt/fantasy` +
-`/var/www/fantasy`, installs logrotate, and installs the daily crontab **for
-that user** (not root) — so a repo compromise can only touch Fantasy's own
-files, not strike/nginx/certs/the rest of the box. The daily `cron_daily.sh`
-pulls the repo, grades settled entries, logs today's entries, rebuilds +
-publishes the dashboard, keeps a 14-day-pruned backup of the record, and writes
-a logrotated log. The entries CSV is gitignored VPS-owned runtime state (kv8 has
-no push creds). Capture the DK boards into `data/` and commit; the cron does the
-rest. To de-risk further, pin `git pull` to a reviewed commit.
+Until 2026-07-08 the repo also contained a hypothetical multi-pick
+set-builder and a $-denominated tracking loop. That machinery was removed:
+the projection quality is the product, and it is measured in hit rate and
+calibration, not currency. See git history for the removed modules.

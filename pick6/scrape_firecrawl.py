@@ -4,8 +4,8 @@ Firecrawl's proxies get past the Cloudflare/bot wall that blocks servers, so we
 fetch PrizePicks' own JSON:API (clean structured data, not fragile DOM). We take
 the STANDARD line per player (skipping demon/goblin alternates), map stat types
 to our markets, resolve pitcher names+games from the slate, and write the board
-the picker/cron read. These are genuine pick'em lines — the first valid Pick6
-data (soft, no vig), so the paper loop finally grades the real board.
+the scorer/cron read. These are the platform's real published lines, so the
+daily loop grades predictions against exactly what was published.
 
 *** YOU supply the key (firecrawl.dev free tier). Set FIRECRAWL_API_KEY=fc-... ***
 

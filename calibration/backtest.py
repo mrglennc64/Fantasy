@@ -1,7 +1,7 @@
 """Calibration backtest: does the K model's stated P(side) match reality?
 
-For Pick6 there is no market to bail you out — a leg's stated probability IS the
-edge, so it must be *calibrated*: legs the model calls 60% must win ~60% of the
+A row's stated probability is the whole claim, so it must be *calibrated*:
+rows the model calls 60% must land ~60% of the
 time. This replays settled starts, computes model P(More) at a synthetic line,
 and bins predicted-vs-realized to expose over/under-confidence.
 
@@ -12,7 +12,7 @@ actual_ks at a line = round(actual to nearest .5 neighbours) sweep.
     python backtest.py [path-to-live_settled.csv]
 
 Reliability output tells you whether to (a) trust the Poisson probs, or (b)
-switch to Negative-Binomial / shrink lambda before building Pick6 entries.
+use Negative-Binomial / shrink lambda before relying on the probabilities.
 """
 from __future__ import annotations
 
@@ -71,9 +71,9 @@ def main():
         print(f"  {lo:.2f}-{hi:<8.2f}{len(grp):>7}{pred*100:10.1f}%{real*100:9.1f}%"
               f"{gap*100:+7.1f}%{flag}")
     print(f"\n  weighted mean |gap| = {total_gap_w/total_n*100:.1f} pts "
-          f"(want < ~3 pts before trusting Pick6 breakevens)")
+          f"(want < ~3 pts before trusting the stated probabilities)")
     print("\nIf high-prob buckets read 'overconfident', Poisson under-disperses "
-          "the K distribution — switch p_more() to Negative-Binomial (fit the\n"
+          "the K distribution — move p_more() to Negative-Binomial (fit the\n"
           "overdispersion on this same file) and/or shrink lambda toward the "
           "slate mean, then re-run.")
 

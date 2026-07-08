@@ -3,7 +3,7 @@
     python archive_slate.py 2026-07-08
 
 Writes data/slates/<date>.csv (pitcher, expected_ks) once per date and never
-overwrites — the whole point is a bet-time snapshot. The /v2/slate endpoint
+overwrites — the whole point is a generation-time snapshot. The /v2/slate endpoint
 re-projects past dates with current season stats (outcome leakage: fitting
 dispersion on it collapses r toward Poisson), so re-fits must use these frozen
 files. Runs from the hourly cron; poll-safe (skips once captured).

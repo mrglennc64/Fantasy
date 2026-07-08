@@ -1,5 +1,5 @@
 """Walk-forward dispersion validation — LINE-INDEPENDENT, so it's valid whether
-you bet sportsbook or Pick6. It never touches a betting line: it only asks
+the downstream use. It never touches a published line: it only asks
 whether actual strikeouts scatter around the projection the way the model's
 Negative-Binomial assumes.
 
@@ -117,7 +117,7 @@ def main():
     print("\n  walk-forward fitted r by test day:")
     for d, r, n in r_traj:
         print(f"    {d}  r={r:5.1f}  ({n} held-out starts)")
-    print("\n  NOTE: line-independent (no betting line used). Says nothing about the")
+    print("\n  NOTE: line-independent (no published line used). Says nothing about the")
     print("  Pick6 EDGE — only whether the K-variance is right. Early-June starts use")
     print("  an older model version (confound).")
 

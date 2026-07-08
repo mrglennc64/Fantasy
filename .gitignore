@@ -6,8 +6,10 @@ credentials.json
 *.log
 .DS_Store
 web/dist/
-# runtime state — the paper track record is owned by whichever host runs the
+# runtime state — the accuracy record is owned by whichever host runs the
 # cron (kv8); committing it would fight the daily writes on git pull.
+data/predictions_log.csv
+data/predictions_log.*.bak
 data/pick6_entries.csv
 data/pick6_entries.*.bak
 data/boards/*_scored.json

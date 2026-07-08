@@ -2,25 +2,27 @@
 
     python consensus.py 2026-07-08
 
-Why: fit_mean.py (2026-07-08, 164 frozen starts) showed our expected_ks has NO
-edge over the pick'em line (anchor s=0.00) — the picker now correctly refuses
-K entries. The only way to earn betting rights back is an INDEPENDENT
-projection source measured the same honest way. FantasyPros daily projections
-are an expert consensus, refreshed per-slate:
+Why: fit_mean.py (2026-07-08, 164 frozen starts) showed our expected_ks adds
+no information beyond the published line (anchor s=0.00), so strikeout
+probabilities are currently anchored to the line. An INDEPENDENT projection
+source, measured the same honest way, is what can raise the fitted
+coefficient. FantasyPros daily projections are an expert consensus,
+refreshed per-slate:
   daily-pitchers.php: IP, K, ...          daily-hitters.php: H, 2B, 3B, HR, R, RBI
 TB is derived: H + 2B + 2*3B + 3*HR (2B/3B columns count EXTRA bases over the
 single already in H).
 
 RULES (learned the hard way):
-  - FROZEN means frozen: written once per date, never overwritten (bet-time
-    snapshot for later fits; poll-safe under the hourly cron).
+  - FROZEN means frozen: written once per date, never overwritten
+    (generation-time snapshot for later fits; poll-safe under the hourly cron).
   - DATE GUARD: the page shows whatever slate FP considers current; if its
-    header date isn't ours, refuse to write (same lesson as the stale
+    header date isn't ours, skip the write (same lesson as the stale
     PrizePicks board).
-  - NOT a betting signal yet. Nothing reads this at pick time. Once ~40+
-    starts have settled, calibration/fit_mean.py grows an 'fp-anchor'
-    candidate (mu' = line + t*(fp_k - line)); consensus earns t the same
-    walk-forward way expected_ks lost s.
+  - Not a scoring input yet: nothing reads this file at scoring time. Once
+    ~40+ starts have settled, calibration/fit_mean.py grows an 'fp-anchor'
+    candidate (mu' = line + t*(fp_k - line)); the coefficient t is fitted
+    walk-forward on these frozen snapshots, exactly how s was fitted for
+    expected_ks.
 
 Fetch: Firecrawl when FIRECRAWL_API_KEY is set (renders JS -> full table);
 plain HTTP otherwise (static HTML carries only the top ~10 rows per page —

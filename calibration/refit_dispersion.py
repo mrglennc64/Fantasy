@@ -2,7 +2,7 @@
 
     python refit_dispersion.py [start] [end]     # default: last 30 days -> yesterday
 
-mu comes from FROZEN slate archives (data/slates/<date>.csv, written at bet time
+mu comes from FROZEN slate archives (data/slates/<date>.csv, written at generation time
 by pick6/archive_slate.py) joined to MLB StatsAPI final boxscores (actual K).
 
 *** LEAKAGE WARNING (learned 2026-07-08): for dates with no frozen archive this
