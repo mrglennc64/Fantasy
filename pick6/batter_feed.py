@@ -4,9 +4,19 @@ Unlocks the batter Pick6 markets (hits, total bases, home runs, RBI, runs) that
 RotoWire paywalls. For each batter: season per-AB / per-PA rates x projected
 plate appearances -> lambda for the market's distribution (markets.py).
 
-    lambda_hits = (H/AB) * expected_AB ,  lambda_hr = (HR/AB) * expected_AB
-    lambda_tb   = (TB/AB) * expected_AB
-    lambda_rbi  = (RBI/PA) * expected_PA ,  lambda_runs = (R/PA) * expected_PA
+    lambda_hits = rate_hits * expected_AB ,  lambda_hr = rate_hr * expected_AB
+    lambda_tb   = rate_tb   * expected_AB
+    lambda_rbi  = rate_rbi  * expected_PA ,  lambda_runs = rate_r * expected_PA
+
+Each rate is EMPIRICAL-BAYES SHRUNK toward the league average in proportion to
+the player's sample:  rate = (count + K*league_rate) / (denom + K), K = 250
+AB/PA-equivalents (PRIOR_WEIGHT). A 500-AB regular keeps ~2/3 of his own rate;
+a 40-AB call-up is pulled ~86% to league average. Added 2026-07-09 after the
+first fresh graded day: 51 batter rows realized 41.2% vs 59.0% stated, with
+the misses concentrated in small-sample players whose raw season rates priced
+"total bases 0.5" at the 70% ceiling (Callihan/Peters/Mateo profile). K=250 is
+a provisional stabilization-point prior — re-fit it on the frozen prediction
+logs once a couple of weeks have settled.
 
 When `project()` is given the game date, the season-rate lambda is adjusted for
 the matchup (all free StatsAPI data, every factor degrades to 1.0 on any miss):
@@ -33,6 +43,10 @@ from feed import norm
 # Typical plate appearances by batting-order slot (1-9); default for unknown slot.
 PA_BY_SLOT = {1: 4.6, 2: 4.5, 3: 4.4, 4: 4.3, 5: 4.1, 6: 4.0, 7: 3.9, 8: 3.8, 9: 3.7}
 DEFAULT_PA = 4.2
+
+# Empirical-Bayes prior weight (in AB/PA-equivalents) pulling a player's season
+# rate toward league average. Provisional; re-fit on frozen logs (see docstring).
+PRIOR_WEIGHT = 250.0
 
 # our market -> how to project it: (rate stat, denom stat, denom kind)
 _RECIPE = {
@@ -176,7 +190,7 @@ def _league_rates(season: int) -> dict | None:
     try:
         st = _get(f"https://statsapi.mlb.com/api/v1/teams/stats"
                   f"?season={season}&group=hitting&stats=season&sportIds=1")
-        ab = h = tb = hr = pa = obp_n = 0.0
+        ab = h = tb = hr = pa = obp_n = rbi = runs = 0.0
         for spl in st.get("stats", [{}])[0].get("splits", []):
             s = spl["stat"]
             ab += float(s.get("atBats", 0) or 0)
@@ -184,15 +198,29 @@ def _league_rates(season: int) -> dict | None:
             tb += float(s.get("totalBases", 0) or 0)
             hr += float(s.get("homeRuns", 0) or 0)
             pa += float(s.get("plateAppearances", 0) or 0)
+            rbi += float(s.get("rbi", 0) or 0)
+            runs += float(s.get("runs", 0) or 0)
             obp_n += float(s.get("plateAppearances", 0) or 0) * float(s.get("obp", 0) or 0)
         if ab <= 0 or pa <= 0:
             raise ValueError("empty league stats")
         out = {"avg": h / ab, "slg": tb / ab, "hr_bf": hr / pa,
-               "ops": obp_n / pa + tb / ab}
+               "ops": obp_n / pa + tb / ab,
+               # per-market league rates for the empirical-Bayes prior
+               "rate": {"hits": h / ab, "total_bases": tb / ab,
+                        "home_runs": hr / ab, "rbi": rbi / pa,
+                        "runs": runs / pa}}
     except Exception:
         out = None
     _league_cache[season] = out
     return out
+
+
+def _eb_rate(count: float, denom: float, league_rate: float | None) -> float:
+    """Empirical-Bayes rate: shrink count/denom toward the league rate by
+    PRIOR_WEIGHT pseudo-observations. Raw rate when no league rate available."""
+    if league_rate is None or denom <= 0:
+        return count / denom if denom > 0 else 0.0
+    return (count + PRIOR_WEIGHT * league_rate) / (denom + PRIOR_WEIGHT)
 
 
 def _fnum(v) -> float | None:
@@ -277,15 +305,27 @@ def project(name: str, market: str, season: int, slot: int | None = None,
     pa = float(stat.get("plateAppearances", 0) or 0)
     if pa < 30:  # too small to trust a rate
         return None
-    exp_pa = PA_BY_SLOT.get(slot, DEFAULT_PA)
+    # Expected PA: a confirmed lineup slot implies a start; otherwise use the
+    # player's OWN season PA per game played — a bench bat averaging 1.8 PA per
+    # appearance must not be priced like a 4.2-PA starter (2026-07-08: the
+    # fresh-day misses were exactly full-start lambdas on part-time players).
+    if slot in PA_BY_SLOT:
+        exp_pa = PA_BY_SLOT[slot]
+    else:
+        gp = float(stat.get("gamesPlayed", 0) or 0)
+        exp_pa = min(max(pa / gp, 1.0), 4.8) if gp > 0 else DEFAULT_PA
     num = float(stat.get(num_key, 0) or 0)
+    lg = _league_rates(season) or {}
+    lg_rate = (lg.get("rate") or {}).get(market)
     if kind == "ab":
         if ab <= 0:
             return None
+        rate = _eb_rate(num, ab, lg_rate)
         exp_ab = exp_pa * (ab / pa)          # expected at-bats this game
-        lam = (num / ab) * exp_ab
+        lam = rate * exp_ab
     else:
-        lam = (num / pa) * exp_pa            # per-PA markets (rbi, runs)
+        rate = _eb_rate(num, pa, lg_rate)    # per-PA markets (rbi, runs)
+        lam = rate * exp_pa
     if date:
         lam *= matchup_factor(pid, market, season, date)
     return lam
