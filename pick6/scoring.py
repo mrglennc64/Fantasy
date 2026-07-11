@@ -47,9 +47,14 @@ def score_leg(leg: dict) -> dict:
     """leg in: name, game, line, lam, market. Out: leg + predicted / p_more /
     p_less / side / p — real numbers for every row, no exceptions."""
     market = leg.get("market", "strikeouts")
-    # Probabilities come from the anchored mean (pick6/projection.py); the
-    # displayed point prediction stays the raw projection — both are real
-    # numbers, serving different jobs (estimate vs uncertainty).
+    # Two probability tracks, both logged and graded (dual-track A/B on the
+    # live record, added 2026-07-11):
+    #   raw      — straight from the projection, no anchor, no ceiling: the
+    #              source model standing on its own.
+    #   anchored — mean anchored per projection.py + un-fitted-dispersion
+    #              ceiling: what the frozen evidence currently supports.
+    # The displayed point prediction is always the raw projection.
+    pm_raw = p_over(market, leg["lam"], leg["line"])
     mu = corrected_mu(market, leg["lam"], leg["line"])
     pm = p_over(market, mu, leg["line"])
     side, p = ("more", pm) if pm >= 0.5 else ("less", 1.0 - pm)
@@ -58,7 +63,7 @@ def score_leg(leg: dict) -> dict:
         p = cap                      # un-fitted dispersion: cap the confidence
         pm = cap if side == "more" else 1.0 - cap
     return {**leg, "predicted": leg["lam"], "p_more": pm, "p_less": 1.0 - pm,
-            "side": side, "p": p}
+            "side": side, "p": p, "p_more_raw": pm_raw}
 
 
 def rank_by_confidence(legs: list[dict]) -> list[dict]:

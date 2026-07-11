@@ -159,6 +159,24 @@ def fit_anchor(pairs: list[dict]) -> float:
     return best_s
 
 
+def anchor_ci(pairs: list[dict], level_drop: float = 1.92) -> tuple[float, float]:
+    """~95% profile-likelihood interval for s: every s whose log-lik is within
+    `level_drop` (chi2_1/2) of the MLE. Answers 'is n big enough to exclude
+    s>0?' — a wide interval means keep collecting, not keep concluding."""
+    pl = [r for r in pairs if r.get("line") is not None]
+
+    def ll(s):
+        return sum(nb_logpmf(r["actual"],
+                             max(r["line"] + s * (r["mu"] - r["line"]), _EPS))
+                   for r in pl)
+
+    grid = [x * 0.02 for x in range(0, 61)]          # 0.00 .. 1.20
+    lls = {s: ll(s) for s in grid}
+    peak = max(lls.values())
+    inside = [s for s, v in lls.items() if v >= peak - level_drop]
+    return (min(inside), max(inside)) if inside else (0.0, 1.2)
+
+
 CORRECTIONS = {
     "raw":    lambda r, fit: r["mu"],
     "affine": lambda r, fit: fit["affine"][0] + fit["affine"][1] * r["mu"],
@@ -247,8 +265,14 @@ def main() -> None:
 
     fit_full = {"affine": fit_affine(pairs), "anchor": fit_anchor(pairs)}
     a, b = fit_full["affine"]
+    lo, hi = anchor_ci(pairs)
     print(f"\nfull-sample fits:  affine mu' = {a:+.2f} + {b:.2f}*mu"
           f"    anchor mu' = line + {fit_full['anchor']:.2f}*(mu - line)")
+    print(f"anchor s ~95% profile-likelihood interval: [{lo:.2f}, {hi:.2f}]"
+          f"   (production s = {__import__('projection').SHRINK_TO_LINE_S})")
+    if hi > 0.1:
+        print("  interval does NOT exclude a useful s — keep collecting frozen"
+              " days; raise s only when the walk-forward supports it.")
 
     evaluate(pairs)
     print("\n=> paste the winning correction into pick6/projection.py (with this"

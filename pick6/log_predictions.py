@@ -26,7 +26,8 @@ from pick6_today import compute_board
 LOG = os.path.join(os.path.dirname(__file__), "..", "data", "predictions_log.csv")
 BOARDS = os.path.join(os.path.dirname(__file__), "..", "data", "boards")
 FIELDS = ["date", "player", "game", "market", "platform", "side", "line",
-          "predicted", "model_p", "rw_proj", "rw_agree", "actual", "result"]
+          "predicted", "model_p", "raw_p_more", "rw_proj", "rw_agree",
+          "actual", "result"]
 
 
 def snapshot_path(date: str) -> str:
@@ -76,6 +77,7 @@ def main() -> None:
             "platform": l.get("platform", ""), "side": l["side"],
             "line": l["line"], "predicted": f"{l['predicted']:.3f}",
             "model_p": f"{l['p']:.4f}",
+            "raw_p_more": f"{l.get('p_more_raw', ''):.4f}" if l.get('p_more_raw') is not None else "",
             "rw_proj": "" if rw is None else f"{rw:.1f}",
             "rw_agree": {True: "1", False: "0", None: ""}[l.get("rw_agree")],
             "actual": "", "result": "",

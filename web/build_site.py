@@ -30,6 +30,19 @@ def _rows(path):
     return list(csv.DictReader(open(path, encoding="utf-8"))) if os.path.exists(path) else []
 
 
+def latest_results():
+    """(date, rows) for the most recent date with graded rows — the per-row
+    'what happened vs what we said' table the record is built from."""
+    rows = [r for r in _rows(PRED_LOG) if r.get("result") in ("1", "0", "X")]
+    if not rows:
+        return None, []
+    rdate = max(r["date"] for r in rows)
+    day = [r for r in rows if r["date"] == rdate]
+    day.sort(key=lambda r: (0 if (r.get("market") or "strikeouts") == "strikeouts" else 1,
+                            -float(r["model_p"])))
+    return rdate, day
+
+
 def accuracy_record():
     rows = _rows(PRED_LOG)
     graded = [r for r in rows if r.get("result") in ("1", "0")]
@@ -42,9 +55,27 @@ def accuracy_record():
     cal = _cal(graded)
     cal_k = _cal([r for r in graded if (r.get("market") or "strikeouts") == "strikeouts"])
     cal_bat = _cal([r for r in graded if (r.get("market") or "strikeouts") != "strikeouts"])
+
+    # raw track: the source model's own probabilities on the same rows
+    raw_legs = []
+    for r in graded:
+        try:
+            praw = float(r["raw_p_more"])
+            actual, line = float(r["actual"]), float(r["line"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if actual == line:
+            continue
+        raw_legs.append((max(praw, 1 - praw),
+                         (actual > line) == (praw >= 0.5)))
+    raw = None
+    if raw_legs:
+        n = len(raw_legs)
+        raw = (n, sum(p for p, _ in raw_legs) / n,
+               sum(1 for _, w in raw_legs if w) / n)
     return {"logged": len(rows), "graded": len(graded),
             "hit": (cal[2] * 100 if cal else 0.0),
-            "cal": cal, "cal_k": cal_k, "cal_bat": cal_bat}
+            "cal": cal, "cal_k": cal_k, "cal_bat": cal_bat, "raw": raw}
 
 
 CSS = """
@@ -95,11 +126,14 @@ def render(date, res, tr, today=None, gen="", frozen=None):
         mkt = MKT_ABBR.get(l["market"], l["market"])
         pm = l.get("p_more")
         pm_txt = f"{pm*100:.1f}%" if pm is not None else "—"
+        praw = l.get("p_more_raw")
+        praw_txt = f"{praw*100:.1f}%" if praw is not None else "—"
         leg_rows += (f"<tr data-side='{grp}'><td>{l['name']}</td>"
                      f"<td><span class=pill>{mkt}</span></td><td>{l.get('game','')}</td>"
                      f"<td class='n'>{l['line']}</td><td class='n'>{l.get('predicted', l['lam']):.2f}</td>"
                      f"<td class='n'>{pm_txt}</td>"
                      f"<td>{_side(l).upper()}</td><td class='n'>{_p(l)*100:.1f}%</td>"
+                     f"<td class='n'>{praw_txt}</td>"
                      f"<td class='n'>{rwp}</td><td>{agree}</td></tr>")
 
     def _cal_txt(c):
@@ -111,6 +145,9 @@ def render(date, res, tr, today=None, gen="", frozen=None):
         tr.get("cal_k") and "pitchers: " + _cal_txt(tr["cal_k"]),
         tr.get("cal_bat") and "batters: " + _cal_txt(tr["cal_bat"])) if t]
     cal_html = " · ".join(parts) if parts else "no graded predictions yet"
+    if tr.get("raw"):
+        cal_html += ("<br>Raw track (source model, no anchor/ceiling): "
+                     + _cal_txt(tr["raw"]))
 
     if date == today:
         stamp = (f"numbers frozen {frozen} (stable across rebuilds)" if frozen
@@ -145,7 +182,7 @@ def render(date, res, tr, today=None, gen="", frozen=None):
 <h2 style="margin:0">Full board — every row scored</h2>
 <div class=toggle><button id=tb-pitcher class=on onclick="flt('pitcher')">Pitchers</button><button id=tb-batter onclick="flt('batter')">Batters</button><button id=tb-all onclick="flt('all')">All</button></div></div>
 <table id=legtbl style="margin-top:12px">
-<tr><th>player</th><th>prop</th><th>game</th><th class=n>line</th><th class=n>predicted</th><th class=n>P(more)</th><th>lean</th><th class=n>P</th><th class=n>RW proj</th><th>RW</th></tr>
+<tr><th>player</th><th>prop</th><th>game</th><th class=n>line</th><th class=n>predicted</th><th class=n>P(more)</th><th>lean</th><th class=n>P</th><th class=n>raw P(more)</th><th class=n>RW proj</th><th>RW</th></tr>
 {leg_rows}</table><div style="margin-top:8px;color:var(--mut);font-size:12px">RW = RotoWire independent projection: = same lean · ≠ opposite lean · no free projection for that market. Batter props use a StatsAPI season-rate baseline adjusted for the opposing starter + platoon split; markets without a fitted dispersion have their stated probability ceilinged at 70%. Strikeout probabilities use a line-anchored mean (shrink coefficient fitted on frozen data — see repo).</div></div>
 <script>
 function flt(g){{document.querySelectorAll('#legtbl tr[data-side]').forEach(function(r){{r.style.display=(g==='all'||r.dataset.side===g)?'':'none';}});

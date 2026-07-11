@@ -24,7 +24,8 @@ import urllib.request
 LOG = os.path.join(os.path.dirname(__file__), "..", "data", "predictions_log.csv")
 LEGACY = os.path.join(os.path.dirname(__file__), "..", "data", "pick6_entries.csv")
 FIELDS = ["date", "player", "game", "market", "platform", "side", "line",
-          "predicted", "model_p", "rw_proj", "rw_agree", "actual", "result"]
+          "predicted", "model_p", "raw_p_more", "rw_proj", "rw_agree",
+          "actual", "result"]
 
 
 def norm(name: str) -> str:
@@ -159,6 +160,34 @@ def main() -> None:
                           if r.get("market", "strikeouts") != "strikeouts"])]
     for tag, rs in [(t, g) for t, g in groups if g]:
         n, hit, pred = _rate(rs)
+        print(f"  {tag:12} n={n:<4} stated {pred*100:.1f}%  "
+              f"realized {hit*100:.1f}%  gap {(hit-pred)*100:+.1f} pts")
+
+    # ---- dual-track: the RAW projection's own probabilities, same rows -----
+    def _raw_rate(rs):
+        legs = []
+        for r in rs:
+            try:
+                praw = float(r["raw_p_more"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            actual, line = float(r["actual"]), float(r["line"])
+            if actual == line:
+                continue
+            won = (actual > line) == (praw >= 0.5)
+            legs.append((max(praw, 1 - praw), won))
+        if not legs:
+            return None
+        n = len(legs)
+        return n, sum(1 for _, w in legs if w) / n, sum(p for p, _ in legs) / n
+
+    print("\nRAW TRACK (no anchor, no ceiling — the source model on its own)")
+    for tag, rs in [(t, g) for t, g in groups if g]:
+        rr = _raw_rate(rs)
+        if rr is None:
+            print(f"  {tag:12} (no raw-track rows yet)")
+            continue
+        n, hit, pred = rr
         print(f"  {tag:12} n={n:<4} stated {pred*100:.1f}%  "
               f"realized {hit*100:.1f}%  gap {(hit-pred)*100:+.1f} pts")
 

@@ -77,6 +77,18 @@ fi
 "$PY" web/build_site.py "$DATE" "$REPO/web/dist/index.html"
 install -m 644 "$REPO/web/dist/index.html" "$WWW/index.html"
 
+# Publish fit reports as static files so constants can be reviewed from
+# anywhere. Daily: batter dispersion fit (log-only, no network). Weekly
+# (Sunday, once): the strikeout anchor-s refit with its confidence interval
+# on the full frozen archive (hits StatsAPI, so not every hour).
+"$PY" calibration/fit_batter.py > "$REPO/web/dist/fit_batter.txt" 2>&1 || true
+install -m 644 "$REPO/web/dist/fit_batter.txt" "$WWW/fit_batter.txt" 2>/dev/null || true
+if [ "$(date +%u)" = "7" ] && [ ! -f "$REPO/data/.refit-$(date +%G-%V)" ]; then
+    "$PY" calibration/fit_mean.py > "$REPO/web/dist/refit_s.txt" 2>&1 || true
+    install -m 644 "$REPO/web/dist/refit_s.txt" "$WWW/refit_s.txt" 2>/dev/null || true
+    touch "$REPO/data/.refit-$(date +%G-%V)"
+fi
+
 # housekeeping: dated backup of the record, prune backups older than 14 days.
 cp -f "$REPO/data/predictions_log.csv" "$REPO/data/predictions_log.$(date +%Y%m%d).bak" 2>/dev/null || true
 find "$REPO/data" \( -name 'predictions_log.*.bak' -o -name 'pick6_entries.*.bak' \) -mtime +14 -delete 2>/dev/null || true
