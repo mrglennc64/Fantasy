@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pick6"))
 from pick6_today import PLATFORM_ABBR, TOP_N, compute_board  # noqa: E402
 from markets import market_side  # noqa: E402
+from projection import corrected_mu  # noqa: E402
 
 MKT_ABBR = {"strikeouts": "K", "hits": "H", "total_bases": "TB",
             "home_runs": "HR", "rbi": "RBI", "runs": "R"}
@@ -110,12 +111,13 @@ def render(date, res, tr, today=None, gen="", frozen=None):
         mkt = MKT_ABBR.get(l["market"], l["market"])
         app = PLATFORM_ABBR.get(l.get("platform", ""), l.get("platform", ""))
         pred = l.get('predicted', l['lam'])
+        corr = corrected_mu(l["market"], pred)
         top_rows += (f"<tr><td>{l['name']}</td><td><span class=pill>{mkt}</span></td>"
-                     f"<td class='n'>{pred:.2f}</td>"
+                     f"<td class='n'>{pred:.2f}</td><td class='n'>{corr:.2f}</td>"
                      f"<td>{_side(l).upper()}</td><td class='n'>{_p(l)*100:.1f}%</td>"
-                     f"<td class='n'>{l['line']}</td><td class='n'>{pred - l['line']:+.2f}</td></tr>")
+                     f"<td class='n'>{l['line']}</td><td class='n'>{corr - l['line']:+.2f}</td></tr>")
     if not top_rows:
-        top_rows = "<tr><td colspan=7 style='color:var(--mut)'>No scored rows yet for this date.</td></tr>"
+        top_rows = "<tr><td colspan=8 style='color:var(--mut)'>No scored rows yet for this date.</td></tr>"
 
     leg_rows = ""
     for l in legs:
@@ -130,13 +132,14 @@ def render(date, res, tr, today=None, gen="", frozen=None):
         praw = l.get("p_more_raw")
         praw_txt = f"{praw*100:.1f}%" if praw is not None else "—"
         pred = l.get('predicted', l['lam'])
+        corr = corrected_mu(l["market"], pred)
         leg_rows += (f"<tr data-side='{grp}'><td>{l['name']}</td>"
                      f"<td><span class=pill>{mkt}</span></td><td>{l.get('game','')}</td>"
-                     f"<td class='n'>{pred:.2f}</td>"
+                     f"<td class='n'>{pred:.2f}</td><td class='n'>{corr:.2f}</td>"
                      f"<td class='n'>{pm_txt}</td>"
                      f"<td>{_side(l).upper()}</td><td class='n'>{_p(l)*100:.1f}%</td>"
                      f"<td class='n'>{praw_txt}</td>"
-                     f"<td class='n'>{l['line']}</td><td class='n'>{pred - l['line']:+.2f}</td>"
+                     f"<td class='n'>{l['line']}</td><td class='n'>{corr - l['line']:+.2f}</td>"
                      f"<td class='n'>{rwp}</td><td>{agree}</td></tr>")
 
     def _cal_txt(c):
@@ -178,15 +181,15 @@ def render(date, res, tr, today=None, gen="", frozen=None):
 </div><div style="margin-top:10px;color:var(--mut);font-size:13px">Out-of-sample calibration: {cal_html}</div></div>
 
 <div class=card><h2>Highest-confidence predictions today</h2><table>
-<tr><th>player</th><th>prop</th><th class=n>predicted</th><th>lean</th><th class=n>P</th><th class=n>ref line</th><th class=n>deviation</th></tr>
+<tr><th>player</th><th>prop</th><th class=n>predicted</th><th class=n>corrected</th><th>lean</th><th class=n>P</th><th class=n>ref line</th><th class=n>deviation</th></tr>
 {top_rows}</table></div>
 
 <div class=card><div style="display:flex;justify-content:space-between;align-items:center">
 <h2 style="margin:0">Full board — every row scored</h2>
 <div class=toggle><button id=tb-pitcher class=on onclick="flt('pitcher')">Pitchers</button><button id=tb-batter onclick="flt('batter')">Batters</button><button id=tb-all onclick="flt('all')">All</button></div></div>
 <table id=legtbl style="margin-top:12px">
-<tr><th>player</th><th>prop</th><th>game</th><th class=n>predicted</th><th class=n>P(more)</th><th>lean</th><th class=n>P</th><th class=n>raw P(more)</th><th class=n>ref line</th><th class=n>deviation</th><th class=n>RW proj</th><th>RW</th></tr>
-{leg_rows}</table><div style="margin-top:8px;color:var(--mut);font-size:12px">RW = RotoWire independent projection: = same lean · ≠ opposite lean · no free projection for that market. Batter props use a StatsAPI season-rate baseline adjusted for the opposing starter + platoon split; markets without a fitted dispersion have their stated probability ceilinged at 70%. Probabilities are computed line-free: affine-corrected mean, fitted dispersion, and a calibration layer fitted on this system's own graded history. The reference line is shown for comparison only.</div></div>
+<tr><th>player</th><th>prop</th><th>game</th><th class=n>predicted</th><th class=n>corrected</th><th class=n>P(more)</th><th>lean</th><th class=n>P</th><th class=n>raw P(more)</th><th class=n>ref line</th><th class=n>deviation</th><th class=n>RW proj</th><th>RW</th></tr>
+{leg_rows}</table><div style="margin-top:8px;color:var(--mut);font-size:12px">RW = RotoWire independent projection: = same lean · ≠ opposite lean · no free projection for that market. Batter props use a StatsAPI season-rate baseline adjusted for the opposing starter + platoon split; markets without a fitted dispersion have their stated probability ceilinged at 70%. Probabilities are computed line-free: affine-corrected mean, fitted dispersion, and a calibration layer fitted on this system's own graded history. The reference line is shown for comparison only; the lean and deviation both follow the corrected mean, so they always agree.</div></div>
 <script>
 function flt(g){{document.querySelectorAll('#legtbl tr[data-side]').forEach(function(r){{r.style.display=(g==='all'||r.dataset.side===g)?'':'none';}});
 ['pitcher','batter','all'].forEach(function(k){{document.getElementById('tb-'+k).className=(k===g)?'on':'';}});}}
