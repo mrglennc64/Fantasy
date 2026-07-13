@@ -269,8 +269,10 @@ def main() -> None:
     lo, hi = anchor_ci(pairs)
     print(f"\nfull-sample fits:  affine mu' = {a:+.2f} + {b:.2f}*mu"
           f"    anchor mu' = line + {fit_full['anchor']:.2f}*(mu - line)")
+    _pj = __import__('projection')
     print(f"anchor s ~95% profile-likelihood interval: [{lo:.2f}, {hi:.2f}]"
-          f"   (production s = {__import__('projection').SHRINK_TO_LINE_S})")
+          f"   (production: line-free affine {_pj.AFFINE_A:+.2f} + "
+          f"{_pj.AFFINE_B:.2f}*mu; anchor is benchmark-only)")
     if hi > 0.1:
         print("  interval does NOT exclude a useful s — keep collecting frozen"
               " days; raise s only when the walk-forward supports it.")

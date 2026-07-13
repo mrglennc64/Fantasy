@@ -44,23 +44,55 @@ from fit_mean import fit_anchor, anchor_ci, nb_logpmf        # noqa: E402
 MLB = r"C:\Users\carin\OneDrive\Dokument\stike\mlb-edge\data"
 LOGS = os.path.join(MLB, "all_starters_gamelogs_2024_2026.csv")
 PRED = os.path.join(MLB, "exports", "vps", "predictions.csv")
+BACKFILL = os.path.join(os.path.dirname(__file__), "..", "data", "lineups_backfill.csv")
+PRED_LOG = os.path.join(os.path.dirname(__file__), "..", "data", "predictions_log.csv")
 
 VAL_FROM = "2026-05-01"     # train strictly before, validate from here
 PRIOR_BF = 150.0            # shrink pseudo-BF for rolling K/BF rates
 FEATURES = ["roll_kbf_3", "roll_kbf_10", "prior_kbf", "roll_bf_3",
-            "opp_k_pct", "is_home", "rest_days"]
+            "opp_k_pct", "is_home", "rest_days", "park_k"]
 
 
 def load_starts() -> list[dict]:
-    rows = []
+    # confirmed-lineup K% backfill (calibration/backfill_lineups.py): finer
+    # matchup feature than team K%, plus starts past the gamelog's cutoff.
+    lineup: dict[tuple[str, str], dict] = {}
+    if os.path.exists(BACKFILL):
+        for r in csv.DictReader(open(BACKFILL, encoding="utf-8")):
+            if r.get("lineup_k_pct"):
+                lineup[(r["date"], str(r["pitcher_id"]))] = r
+
+    rows, seen = [], set()
     for r in csv.DictReader(open(LOGS, encoding="utf-8")):
         try:
+            key = (r["date"], str(r["pitcher_id"]))
+            bf = lineup.get(key)
             rows.append({
                 "date": r["date"], "pitcher": r["pitcher"],
                 "pid": r["pitcher_id"], "K": int(float(r["K"])),
                 "BF": float(r["BF"]), "pitches": float(r["pitches"] or 0),
-                "opp_k_pct": float(r["opp_k_pct"]),
+                # lineup-level K% when backfilled, team-level otherwise
+                "opp_k_pct": (float(bf["lineup_k_pct"]) if bf
+                              else float(r["opp_k_pct"])),
                 "is_home": 1.0 if r["is_home"] == "True" else 0.0,
+                "venue": r["team"] if r["is_home"] == "True" else r["opponent"],
+            })
+            seen.add(key)
+        except (KeyError, ValueError):
+            continue
+    # backfill-only starts (after the gamelog cutoff)
+    for key, r in lineup.items():
+        if key in seen:
+            continue
+        try:
+            home = str(r["is_home"]) == "True"
+            rows.append({
+                "date": r["date"], "pitcher": r["pitcher"], "pid": r["pitcher_id"],
+                "K": int(float(r["K"])), "BF": float(r["BF"]),
+                "pitches": float(r["pitches"] or 0),
+                "opp_k_pct": float(r["lineup_k_pct"]),
+                "is_home": 1.0 if home else 0.0,
+                "venue": r["team"] if home else r["opponent"],
             })
         except (KeyError, ValueError):
             continue
@@ -68,8 +100,29 @@ def load_starts() -> list[dict]:
     return rows
 
 
+def park_factors(rows: list[dict]) -> dict[str, float]:
+    """Venue K-factor from PRE-2026 rows only (no leakage into validation):
+    venue K/BF over league K/BF, shrunk by 2000 pseudo-BF."""
+    lg_k = lg_bf = 0.0
+    per: dict[str, list[float]] = {}
+    for r in rows:
+        if r["date"] >= "2026-01-01" or not r.get("venue"):
+            continue
+        per.setdefault(r["venue"], [0.0, 0.0])
+        per[r["venue"]][0] += r["K"]
+        per[r["venue"]][1] += r["BF"]
+        lg_k += r["K"]
+        lg_bf += r["BF"]
+    lg = lg_k / lg_bf if lg_bf else 0.22
+    out = {}
+    for v, (k, bf) in per.items():
+        out[v] = ((k + 2000 * lg) / (bf + 2000)) / lg
+    return out
+
+
 def build_features(rows: list[dict]) -> list[dict]:
     """Attach strictly-prior features to each start (per pitcher, in order)."""
+    parks = park_factors(rows)
     lg_kbf = 0.22  # placeholder; replaced by running league rate below
     tot_k = tot_bf = 0.0
     hist: dict[str, list[dict]] = defaultdict(list)
@@ -92,7 +145,8 @@ def build_features(rows: list[dict]) -> list[dict]:
                         "roll_kbf_3": _kbf(3), "roll_kbf_10": _kbf(10),
                         "prior_kbf": _kbf(None),
                         "roll_bf_3": sum(x["BF"] for x in h[-3:]) / min(len(h), 3),
-                        "rest_days": float(min(max(rest, 3), 12))})
+                        "rest_days": float(min(max(rest, 3), 12)),
+                        "park_k": parks.get(r.get("venue"), 1.0)})
         h.append(r)
         tot_k += r["K"]
         tot_bf += r["BF"]
@@ -106,17 +160,25 @@ def matrix(rows: list[dict]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def load_lines() -> dict[tuple[str, str], dict]:
-    """(date, norm(pitcher)) -> {line, mu_edge} from the June pre-game
-    mlb-edge log (real published lines, frozen before the games)."""
+    """(date, norm(pitcher)) -> {line, mu_edge}: June pre-game mlb-edge log +
+    July rows from our own frozen prediction log (both logged before games)."""
     out = {}
-    if not os.path.exists(PRED):
-        return out
-    for r in csv.DictReader(open(PRED, encoding="utf-8")):
-        if not r.get("expected_ks") or not r.get("line"):
-            continue
-        key = (r["date"], norm(r["pitcher"]))
-        if key not in out or r.get("bookmaker") == "draftkings":
-            out[key] = {"line": float(r["line"]), "mu_edge": float(r["expected_ks"])}
+    if os.path.exists(PRED):
+        for r in csv.DictReader(open(PRED, encoding="utf-8")):
+            if not r.get("expected_ks") or not r.get("line"):
+                continue
+            key = (r["date"], norm(r["pitcher"]))
+            if key not in out or r.get("bookmaker") == "draftkings":
+                out[key] = {"line": float(r["line"]),
+                            "mu_edge": float(r["expected_ks"])}
+    if os.path.exists(PRED_LOG):
+        for r in csv.DictReader(open(PRED_LOG, encoding="utf-8")):
+            if (r.get("market") or "strikeouts") != "strikeouts" or not r.get("line"):
+                continue
+            key = (r["date"], norm(r["player"]))
+            if key not in out:
+                out[key] = {"line": float(r["line"]),
+                            "mu_edge": float(r["predicted"])}
     return out
 
 
